@@ -57,27 +57,20 @@ Depending on enabled tools and security settings, an agent can read and write fi
 
 ---
 
-## Build and Run
+## Build and Run (Native Without Xcode - macOS Only)
 
 ```bash
-git clone https://github.com/Lumicake/Agent-Lumi.git
-cd Agent-Lumi
-./run_app.sh
+git clone https://github.com/triadastra/Lumi.git
+cd Lumi
+./build_unsigned_dmg.sh
 ```
 
-`run_app.sh` builds with `swift build`, assembles the `.app` bundle in `runable/`, signs it (using your Developer certificate if available, otherwise ad-hoc), and launches it.
-
-For a full rebuild that also kills the running instance and installs to `/Applications`:
+## Build and Distribute (iOS and macOS)
 
 ```bash
-./auto_update.sh
+git clone https://github.com/triadastra/Lumi.git
 ```
-
-To build only (no launch):
-
-```bash
-swift build
-```
+Then open this project with Xcode > Run. Pair up with your other devices.
 
 ---
 
