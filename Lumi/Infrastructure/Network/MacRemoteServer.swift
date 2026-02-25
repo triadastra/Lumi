@@ -393,6 +393,32 @@ public final class MacRemoteServer {
             case "disconnect":
                 return RemoteResponseMessage(id: id, success: true, result: "Goodbye")
 
+            // ── Data Sync ─────────────────────────────────────────────────────────
+            case "get_sync_data":
+                let fileName = params["file"] ?? "agents.json"
+                if let data = DatabaseManager.shared.rawData(for: fileName) {
+                    let b64 = data.base64EncodedString()
+                    return RemoteResponseMessage(id: id, success: true, result: "Sync data for \(fileName)", imageData: b64)
+                } else {
+                    return RemoteResponseMessage(id: id, success: false, result: "", error: "File \(fileName) not found")
+                }
+
+            case "push_sync_data":
+                let fileName = params["file"] ?? "agents.json"
+                guard let b64 = params["data"], let data = Data(base64Encoded: b64) else {
+                    return RemoteResponseMessage(id: id, success: false, result: "", error: "Invalid sync data")
+                }
+                // Save to local database
+                // Note: We use a simple save here. Repositories will reload on next access.
+                try data.write(to: baseURL().appendingPathComponent(fileName), options: .atomic)
+                
+                // Notify AppState to reload if it's currently running
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(name: Notification.Name("lumi.dataRemoteUpdated"), object: fileName)
+                }
+                
+                return RemoteResponseMessage(id: id, success: true, result: "Synced \(fileName) to Mac")
+
             default:
                 return RemoteResponseMessage(id: id, success: false, result: "",
                                              error: "Unknown command: \(command.commandType)")
@@ -401,6 +427,11 @@ public final class MacRemoteServer {
             return RemoteResponseMessage(id: id, success: false, result: "",
                                          error: error.localizedDescription)
         }
+    }
+
+    private func baseURL() -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport.appendingPathComponent("LumiAgent", isDirectory: true)
     }
 
     // MARK: - Execution Helpers

@@ -271,10 +271,6 @@ struct AccountTab: View {
     @AppStorage("preferences.newsletter") private var wantsUpdates = false
     @AppStorage("preferences.betaFeatures") private var betaFeatures = false
     
-    @State private var isCloudEnabled = DatabaseManager.shared.isCloudEnabled
-    @State private var isMigrating = false
-    @State private var migrationError: String?
-    
     private var joinedDate: Date? { joinedAt > 0 ? Date(timeIntervalSince1970: joinedAt) : nil }
 
     var body: some View {
@@ -303,33 +299,6 @@ struct AccountTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            
-            Section("Cloud Synchronization") {
-                Toggle(isOn: $isCloudEnabled) {
-                    Label("Sync data via iCloud", systemImage: "icloud.fill")
-                }
-                .disabled(isMigrating)
-                .onChange(of: isCloudEnabled) {
-                    handleSyncChange()
-                }
-                
-                if isMigrating {
-                    HStack(spacing: 8) {
-                        ProgressView().scaleEffect(0.7)
-                        Text("Migrating data...")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if let error = migrationError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                } else {
-                    Text("Syncs agents, conversations, and API keys across all your devices using your iCloud storage.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
 
             Section("Preferences") {
                 Toggle("Product updates by email", isOn: $wantsUpdates)
@@ -338,30 +307,6 @@ struct AccountTab: View {
         }
         .formStyle(.grouped)
         .onAppear { loadSystemAccount() }
-    }
-
-    private func handleSyncChange() {
-        isMigrating = true
-        migrationError = nil
-        
-        Task {
-            do {
-                if isCloudEnabled {
-                    try await DatabaseManager.shared.migrateToCloud()
-                } else {
-                    try await DatabaseManager.shared.migrateToLocal()
-                }
-                await MainActor.run {
-                    isMigrating = false
-                }
-            } catch {
-                await MainActor.run {
-                    isMigrating = false
-                    isCloudEnabled = !isCloudEnabled // Revert
-                    migrationError = error.localizedDescription
-                }
-            }
-        }
     }
 
     private func loadSystemAccount() {

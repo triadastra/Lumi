@@ -12,21 +12,7 @@
     <key>com.apple.security.network.server</key>
     <true/>
     
-    <!-- iCloud & Ubiquity Container for Syncing -->
-    <key>com.apple.developer.icloud-container-identifiers</key>
-    <array>
-        <string>iCloud.$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-    </array>
-    <key>com.apple.developer.icloud-services</key>
-    <array>
-        <string>CloudDocuments</string>
-    </array>
-    <key>com.apple.developer.ubiquity-container-identifiers</key>
-    <array>
-        <string>iCloud.$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-    </array>
-    <key>com.apple.developer.ubiquity-kvstore-identifier</key>
-    <string>$(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <!-- Note: iCloud/HealthKit removed to allow building on Personal Development Teams -->
 
     <!-- Required for AppleScript automation and System Events -->
     <key>com.apple.security.automation.apple-events</key>

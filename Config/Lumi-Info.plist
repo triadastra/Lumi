@@ -116,7 +116,7 @@
     
     <!-- App Capabilities -->
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>26.2</string>
     
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>

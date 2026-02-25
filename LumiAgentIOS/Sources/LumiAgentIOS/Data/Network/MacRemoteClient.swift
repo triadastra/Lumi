@@ -265,6 +265,24 @@ public final class MacRemoteClient: ObservableObject {
         try await send(RemoteCommand(commandType: .ping), timeout: 5)
     }
 
+    public func pullSyncData(file: String) async throws -> Data {
+        let cmd = RemoteCommand(commandType: .getSyncData, parameters: ["file": file])
+        let resp = try await send(cmd, timeout: 20)
+        guard resp.success, let b64 = resp.imageData, let data = Data(base64Encoded: b64) else {
+            throw RemoteClientError.decodingFailed
+        }
+        return data
+    }
+
+    public func pushSyncData(file: String, data: Data) async throws {
+        let b64 = data.base64EncodedString()
+        let cmd = RemoteCommand(commandType: .pushSyncData, parameters: ["file": file, "data": b64])
+        let resp = try await send(cmd, timeout: 20)
+        if !resp.success {
+            throw RemoteClientError.decodingFailed
+        }
+    }
+
     deinit {
         connection?.cancel()
     }

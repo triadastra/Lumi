@@ -22,21 +22,9 @@ final class DatabaseManager {
     }()
     private let decoder = JSONDecoder()
     private let ioQueue = DispatchQueue(label: "com.lumiagent.storage", qos: .utility)
-    
-    private var localBaseURL: URL
-    private var cloudBaseURL: URL?
-    
-    @Published var isCloudEnabled: Bool = false {
-        didSet {
-            UserDefaults.standard.set(isCloudEnabled, forKey: "settings.iCloudEnabled")
-            NSUbiquitousKeyValueStore.default.set(isCloudEnabled, forKey: "settings.iCloudEnabled")
-            NSUbiquitousKeyValueStore.default.synchronize()
-            NotificationCenter.default.post(name: .lumiICloudStatusChanged, object: nil)
-        }
-    }
+    private let baseURL: URL
 
     private init() {
-        // 1. Setup Local Storage
         let appSupport = (try? fileManager.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -44,43 +32,13 @@ final class DatabaseManager {
             create: true
         )) ?? fileManager.temporaryDirectory
 
-        let localFolder = appSupport.appendingPathComponent("LumiAgent", isDirectory: true)
-        try? fileManager.createDirectory(at: localFolder, withIntermediateDirectories: true)
-        localBaseURL = localFolder
-        
-        // 2. Load Sync Preference
-        NSUbiquitousKeyValueStore.default.synchronize()
-        if NSUbiquitousKeyValueStore.default.object(forKey: "settings.iCloudEnabled") != nil {
-            isCloudEnabled = NSUbiquitousKeyValueStore.default.bool(forKey: "settings.iCloudEnabled")
-        } else {
-            isCloudEnabled = UserDefaults.standard.bool(forKey: "settings.iCloudEnabled")
-        }
-        
-        // 3. Setup Cloud Storage (async check)
-        setupCloudContainer()
-    }
-    
-    private func setupCloudContainer() {
-        DispatchQueue.global(qos: .utility).async {
-            if let containerURL = self.fileManager.url(forUbiquityContainerIdentifier: nil) {
-                let cloudFolder = containerURL.appendingPathComponent("Documents", isDirectory: true)
-                try? self.fileManager.createDirectory(at: cloudFolder, withIntermediateDirectories: true)
-                DispatchQueue.main.async {
-                    self.cloudBaseURL = cloudFolder
-                }
-            }
-        }
-    }
-
-    private var currentBaseURL: URL {
-        if isCloudEnabled, let cloud = cloudBaseURL {
-            return cloud
-        }
-        return localBaseURL
+        let appFolder = appSupport.appendingPathComponent("LumiAgent", isDirectory: true)
+        try? fileManager.createDirectory(at: appFolder, withIntermediateDirectories: true)
+        baseURL = appFolder
     }
 
     private func fileURL(_ name: String) -> URL {
-        currentBaseURL.appendingPathComponent(name, isDirectory: false)
+        baseURL.appendingPathComponent(name, isDirectory: false)
     }
 
     func load<T: Codable>(_ type: T.Type, from name: String, default defaultValue: @autoclosure () -> T) throws -> T {
@@ -102,51 +60,8 @@ final class DatabaseManager {
         }
     }
     
-    // MARK: - Migration
-    
-    func migrateToCloud() async throws {
-        guard let cloud = cloudBaseURL else { throw DatabaseError.iCloudUnavailable }
-        
-        try ioQueue.sync {
-            let files = try fileManager.contentsOfDirectory(atPath: localBaseURL.path)
-            for file in files {
-                let localFile = localBaseURL.appendingPathComponent(file)
-                let cloudFile = cloud.appendingPathComponent(file)
-                
-                if fileManager.fileExists(atPath: cloudFile.path) {
-                    try fileManager.removeItem(at: cloudFile)
-                }
-                try fileManager.copyItem(at: localFile, to: cloudFile)
-            }
-        }
-        isCloudEnabled = true
-    }
-    
-    func migrateToLocal() async throws {
-        guard let cloud = cloudBaseURL else { throw DatabaseError.iCloudUnavailable }
-        
-        try ioQueue.sync {
-            let files = try fileManager.contentsOfDirectory(atPath: cloud.path)
-            for file in files {
-                let cloudFile = cloud.appendingPathComponent(file)
-                let localFile = localBaseURL.appendingPathComponent(file)
-                
-                if fileManager.fileExists(atPath: localFile.path) {
-                    try fileManager.removeItem(at: localFile)
-                }
-                try fileManager.copyItem(at: cloudFile, to: localFile)
-            }
-        }
-        isCloudEnabled = false
-    }
-}
-
-enum DatabaseError: Error, LocalizedError {
-    case iCloudUnavailable
-    
-    var errorDescription: String? {
-        switch self {
-        case .iCloudUnavailable: return "iCloud container could not be located. Check your system settings."
-        }
+    /// Returns the raw data for a specific database file.
+    func rawData(for name: String) -> Data? {
+        try? Data(contentsOf: fileURL(name))
     }
 }

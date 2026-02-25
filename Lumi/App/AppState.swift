@@ -38,23 +38,8 @@ final class AppState: ObservableObject {
     @AppStorage("settings.defaultExteriorAgentId") private var defaultAgentIdString = ""
 
     var defaultExteriorAgentId: UUID? {
-        get { 
-            if DatabaseManager.shared.isCloudEnabled {
-                NSUbiquitousKeyValueStore.default.synchronize()
-                if let cloudId = NSUbiquitousKeyValueStore.default.string(forKey: "settings.defaultExteriorAgentId") {
-                    return UUID(uuidString: cloudId)
-                }
-            }
-            return UUID(uuidString: defaultAgentIdString) 
-        }
-        set { 
-            let idString = newValue?.uuidString ?? ""
-            defaultAgentIdString = idString
-            if DatabaseManager.shared.isCloudEnabled {
-                NSUbiquitousKeyValueStore.default.set(idString, forKey: "settings.defaultExteriorAgentId")
-                NSUbiquitousKeyValueStore.default.synchronize()
-            }
-        }
+        get { UUID(uuidString: defaultAgentIdString) }
+        set { defaultAgentIdString = newValue?.uuidString ?? "" }
     }
 
     func isDefaultAgent(_ id: UUID) -> Bool {
@@ -70,26 +55,7 @@ final class AppState: ObservableObject {
         didSet { saveConversations() }
     }
     @Published var selectedConversationId: UUID?
-    @AppStorage("settings.hotkeyConversationId") private var hotkeyConversationIdStringStored = ""
-    
-    var hotkeyConversationIdString: String {
-        get {
-            if DatabaseManager.shared.isCloudEnabled {
-                NSUbiquitousKeyValueStore.default.synchronize()
-                if let cloudId = NSUbiquitousKeyValueStore.default.string(forKey: "settings.hotkeyConversationId") {
-                    return cloudId
-                }
-            }
-            return hotkeyConversationIdStringStored
-        }
-        set {
-            hotkeyConversationIdStringStored = newValue
-            if DatabaseManager.shared.isCloudEnabled {
-                NSUbiquitousKeyValueStore.default.set(newValue, forKey: "settings.hotkeyConversationId")
-                NSUbiquitousKeyValueStore.default.synchronize()
-            }
-        }
-    }
+    @AppStorage("settings.hotkeyConversationId") var hotkeyConversationIdString = ""
 
     // MARK: - Tool Call History
     @Published var toolCallHistory: [ToolCallRecord] = []
@@ -145,19 +111,9 @@ final class AppState: ObservableObject {
             ) { _ in
                 AppState.shared?.refreshGlobalHotkeys()
             }
-            
-            // Listen for iCloud KVS changes
+
             NotificationCenter.default.addObserver(
-                forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-                object: NSUbiquitousKeyValueStore.default,
-                queue: .main
-            ) { [weak self] _ in
-                self?.handleCloudKVSChange()
-            }
-            
-            // Listen for iCloud status changes (migration complete)
-            NotificationCenter.default.addObserver(
-                forName: .lumiICloudStatusChanged,
+                forName: Notification.Name("lumi.dataRemoteUpdated"),
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
@@ -167,11 +123,6 @@ final class AppState: ObservableObject {
             }
         }
         #endif
-    }
-    
-    private func handleCloudKVSChange() {
-        // Refresh local UI if cloud data changed
-        objectWillChange.send()
     }
 
     // MARK: - Command Palette Message (Shared)

@@ -120,13 +120,46 @@ public final class MacRemoteViewModel {
                 try await client.connect(to: device)
                 connectedDevice = device
                 connectionError = nil
-                // Fetch initial system info
+                
+                // 1. Initial State Refresh
                 await refreshRemoteState()
+                
+                // 2. Peer-to-Peer Auto Sync (Pull from Mac)
+                await autoSyncFromMac()
+                
             } catch {
                 connectionError = error.localizedDescription
             }
             isConnecting = false
         }
+    }
+
+    private func autoSyncFromMac() async {
+        guard connectedDevice != nil else { return }
+        
+        let files = ["agents.json", "conversations.json", "automations.json"]
+        for file in files {
+            do {
+                let data = try await client.pullSyncData(file: file)
+                // Save to local iOS app storage
+                let url = baseURL().appendingPathComponent(file)
+                try data.write(to: url, options: .atomic)
+                print("✅ Synced \(file) from Mac")
+            } catch {
+                print("⚠️ Failed to sync \(file): \(error.localizedDescription)")
+            }
+        }
+        
+        // Notify local app state to reload (assuming it exists on iOS side)
+        // If AppState is shared, it will reload from these files on next access.
+    }
+
+    private func baseURL() -> URL {
+        let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
+        let docs = paths[0]
+        let lumi = docs.appendingPathComponent("LumiAgent", isDirectory: true)
+        try? FileManager.default.createDirectory(at: lumi, withIntermediateDirectories: true)
+        return lumi
     }
 
     public func disconnect() {

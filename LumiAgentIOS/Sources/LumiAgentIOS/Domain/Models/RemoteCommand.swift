@@ -82,6 +82,10 @@ public struct RemoteCommand: Codable, Identifiable, Sendable {
         case ping               = "ping"
         case disconnect         = "disconnect"
 
+        // Data Sync
+        case getSyncData        = "get_sync_data"
+        case pushSyncData       = "push_sync_data"
+
         var displayName: String {
             switch self {
             case .setBrightness:    return "Set Brightness"
@@ -118,6 +122,8 @@ public struct RemoteCommand: Codable, Identifiable, Sendable {
             case .sendNotification: return "Send Notification"
             case .ping:             return "Ping"
             case .disconnect:       return "Disconnect"
+            case .getSyncData:      return "Sync (Pull)"
+            case .pushSyncData:     return "Sync (Push)"
             }
         }
 
@@ -151,6 +157,8 @@ public struct RemoteCommand: Codable, Identifiable, Sendable {
             case .sendNotification:                 return "bell.fill"
             case .ping:                             return "antenna.radiowaves.left.and.right"
             case .disconnect:                       return "xmark.circle"
+            case .getSyncData:                      return "icloud.and.arrow.down"
+            case .pushSyncData:                     return "icloud.and.arrow.up"
             }
         }
     }
