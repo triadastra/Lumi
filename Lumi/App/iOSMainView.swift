@@ -668,6 +668,7 @@ struct iOSAPIKeysView: View {
     @State private var openAIKey = ""
     @State private var anthropicKey = ""
     @State private var geminiKey = ""
+    @State private var qwenKey = ""
 
     var body: some View {
         Form {
@@ -693,6 +694,14 @@ struct iOSAPIKeysView: View {
                     .disabled(geminiKey.isEmpty)
             } header: {
                 Label("Google Gemini", systemImage: "moon.stars.fill")
+            }
+
+            Section {
+                SecureField("sk-...", text: $qwenKey)
+                Button("Save Aliyun Qwen Key") { saveKey(qwenKey, for: .qwen) }
+                    .disabled(qwenKey.isEmpty)
+            } header: {
+                Label("Aliyun Qwen", systemImage: "cloud.fill")
             }
 
             Section {

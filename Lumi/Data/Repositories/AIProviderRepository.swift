@@ -41,6 +41,16 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
         case .openai:
             return try await sendOpenAIMessage(model: model, messages: messages,
                 systemPrompt: systemPrompt, tools: tools, temperature: temperature, maxTokens: maxTokens)
+        case .qwen:
+            return try await sendOpenAIMessage(
+                model: model,
+                messages: messages,
+                systemPrompt: systemPrompt,
+                tools: tools,
+                temperature: temperature,
+                maxTokens: maxTokens,
+                provider: .qwen
+            )
         case .anthropic:
             return try await sendAnthropicMessage(model: model, messages: messages,
                 systemPrompt: systemPrompt, tools: tools, temperature: temperature, maxTokens: maxTokens)
@@ -68,6 +78,15 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
         case .openai:
             return try await sendOpenAIStream(model: model, messages: messages,
                 systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
+        case .qwen:
+            return try await sendOpenAIStream(
+                model: model,
+                messages: messages,
+                systemPrompt: systemPrompt,
+                temperature: temperature,
+                maxTokens: maxTokens,
+                provider: .qwen
+            )
         case .anthropic:
             return try await sendAnthropicStream(model: model, messages: messages,
                 systemPrompt: systemPrompt, temperature: temperature, maxTokens: maxTokens)
@@ -85,6 +104,7 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
     func getAvailableModels(provider: AIProvider) async throws -> [String] {
         switch provider {
         case .openai:    return provider.defaultModels
+        case .qwen:      return provider.defaultModels
         case .anthropic: return provider.defaultModels
         case .gemini:    return provider.defaultModels
         case .ollama:    return try await fetchOllamaModels()
@@ -307,13 +327,14 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
 
     private func sendOpenAIMessage(
         model: String, messages: [AIMessage],
-        systemPrompt: String?, tools: [AITool], temperature: Double?, maxTokens: Int?
+        systemPrompt: String?, tools: [AITool], temperature: Double?, maxTokens: Int?,
+        provider: AIProvider = .openai
     ) async throws -> AIResponse {
         let req = try openAIRequest(model: model, messages: messages,
             systemPrompt: systemPrompt, tools: tools,
-            temperature: temperature, maxTokens: maxTokens, stream: false)
+            temperature: temperature, maxTokens: maxTokens, stream: false, provider: provider)
         let (data, response) = try await URLSession.shared.data(for: req)
-        try checkHTTP(response, data: data, provider: "OpenAI")
+        try checkHTTP(response, data: data, provider: openAIProviderName(provider))
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
@@ -348,17 +369,18 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
 
     private func sendOpenAIStream(
         model: String, messages: [AIMessage],
-        systemPrompt: String?, temperature: Double?, maxTokens: Int?
+        systemPrompt: String?, temperature: Double?, maxTokens: Int?,
+        provider: AIProvider = .openai
     ) async throws -> AsyncThrowingStream<AIStreamChunk, Error> {
         let req = try openAIRequest(model: model, messages: messages,
             systemPrompt: systemPrompt, tools: [],
-            temperature: temperature, maxTokens: maxTokens, stream: true)
+            temperature: temperature, maxTokens: maxTokens, stream: true, provider: provider)
 
         return AsyncThrowingStream { continuation in
             Task {
                 do {
                     let (bytes, response) = try await URLSession.shared.bytes(for: req)
-                    try checkHTTP(response, data: nil, provider: "OpenAI")
+                    try checkHTTP(response, data: nil, provider: openAIProviderName(provider))
 
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
@@ -395,12 +417,24 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
 
     private func openAIRequest(
         model: String, messages: [AIMessage], systemPrompt: String?,
-        tools: [AITool], temperature: Double?, maxTokens: Int?, stream: Bool
+        tools: [AITool], temperature: Double?, maxTokens: Int?, stream: Bool, provider: AIProvider
     ) throws -> URLRequest {
-        guard let apiKey = try getAPIKey(for: .openai), !apiKey.isEmpty else {
+        let apiProvider: AIProvider
+        let endpoint: String
+        switch provider {
+        case .openai:
+            apiProvider = .openai
+            endpoint = "https://api.openai.com/v1/chat/completions"
+        case .qwen:
+            apiProvider = .qwen
+            endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        default:
+            throw AIProviderError.providerError("Unsupported OpenAI-compatible provider: \(provider.rawValue)")
+        }
+        guard let apiKey = try getAPIKey(for: apiProvider), !apiKey.isEmpty else {
             throw AIProviderError.apiKeyNotFound
         }
-        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else {
+        guard let url = URL(string: endpoint) else {
             throw AIProviderError.networkError
         }
 
@@ -424,6 +458,17 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return req
+    }
+
+    private func openAIProviderName(_ provider: AIProvider) -> String {
+        switch provider {
+        case .openai:
+            return "OpenAI"
+        case .qwen:
+            return "Aliyun Qwen"
+        default:
+            return provider.rawValue
+        }
     }
 
     private func openAIUsage(_ json: [String: Any]) -> AIUsage? {

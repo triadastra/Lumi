@@ -88,6 +88,7 @@ enum AIProvider: String, Codable, CaseIterable {
     case openai = "OpenAI"
     case anthropic = "Anthropic"
     case gemini = "Gemini"
+    case qwen = "Aliyun Qwen"
     case ollama = "Ollama"
 
     var defaultModels: [String] {
@@ -128,6 +129,14 @@ enum AIProvider: String, Codable, CaseIterable {
                 // Gemini 1.x
                 "gemini-1.5-pro",
                 "gemini-1.5-flash",
+            ]
+        case .qwen:
+            return [
+                "qwen-plus",
+                "qwen-turbo",
+                "qwen-max",
+                "qwen2.5-72b-instruct",
+                "qwen2.5-32b-instruct"
             ]
         case .ollama:
             return []

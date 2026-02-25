@@ -339,6 +339,7 @@ struct APIKeysTab: View {
     @State private var openAIKey = ""
     @State private var anthropicKey = ""
     @State private var geminiKey = ""
+    @State private var qwenKey = ""
     @State private var braveKey = ""
 
     // Saved-flash state
@@ -373,6 +374,14 @@ struct APIKeysTab: View {
                 title: "Gemini (Google AI)",
                 placeholder: "AIza…",
                 key: $geminiKey
+            )
+
+            apiKeySection(
+                provider: .qwen,
+                icon: "cloud.fill", color: .cyan,
+                title: "Aliyun Qwen",
+                placeholder: "sk-…",
+                key: $qwenKey
             )
 
             // Brave Search API
@@ -495,7 +504,7 @@ struct APIKeysTab: View {
 
     private func loadKeyStatus() {
         let repo = AIProviderRepository()
-        for provider in [AIProvider.openai, .anthropic, .gemini] {
+        for provider in [AIProvider.openai, .anthropic, .gemini, .qwen] {
             hasKey[provider] = (try? repo.getAPIKey(for: provider)).flatMap { $0.isEmpty ? nil : $0 } != nil
         }
         let bk = UserDefaults.standard.string(forKey: "settings.braveAPIKey") ?? ""
@@ -773,6 +782,7 @@ struct AboutTab: View {
                     FeatureCell(icon: "brain", color: .green, title: "OpenAI", detail: "GPT-4o & more")
                     FeatureCell(icon: "sparkles", color: .purple, title: "Anthropic", detail: "Claude models")
                     FeatureCell(icon: "atom", color: .blue, title: "Gemini", detail: "Google AI models")
+                    FeatureCell(icon: "cloud.fill", color: .cyan, title: "Aliyun Qwen", detail: "Qwen series models")
                     FeatureCell(icon: "server.rack", color: .orange, title: "Ollama", detail: "Run locally")
                     FeatureCell(icon: "bubble.left.and.bubble.right.fill", color: .teal, title: "Agent Space", detail: "Chat & groups")
                     FeatureCell(icon: "shield.fill", color: .indigo, title: "Security", detail: "Approval flows")

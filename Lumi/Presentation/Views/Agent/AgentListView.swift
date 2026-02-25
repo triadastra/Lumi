@@ -85,6 +85,7 @@ struct AgentRowView: View {
         case .openai:    return "brain"
         case .anthropic: return "sparkles"
         case .gemini:    return "atom"
+        case .qwen:      return "cloud.fill"
         case .ollama:    return "server.rack"
         }
     }

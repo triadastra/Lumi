@@ -67,6 +67,7 @@ enum AppConfig {
         .openai: "gpt-4.1",
         .anthropic: "claude-sonnet-4-6",
         .gemini: "gemini-3.1-flash",
+        .qwen: "qwen-plus",
         .ollama: ""
     ]
 

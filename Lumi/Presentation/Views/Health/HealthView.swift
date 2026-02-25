@@ -717,6 +717,9 @@ final class HealthKitManager: ObservableObject {
         } else if (try? repo.getAPIKey(for: .gemini)).flatMap({ $0.isEmpty ? nil : $0 }) != nil {
             provider = .gemini
             model    = "gemini-3.1-pro"
+        } else if (try? repo.getAPIKey(for: .qwen)).flatMap({ $0.isEmpty ? nil : $0 }) != nil {
+            provider = .qwen
+            model    = "qwen-plus"
         } else {
             provider = .ollama
             let models = (try? await repo.getAvailableModels(provider: .ollama)) ?? []
