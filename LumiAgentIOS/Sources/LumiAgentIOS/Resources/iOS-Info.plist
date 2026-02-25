@@ -69,6 +69,12 @@
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>LumiAgent uses your location to show current local weather conditions.</string>
 
+    <!-- ── Privacy — HealthKit ── -->
+    <key>NSHealthShareUsageDescription</key>
+    <string>LumiAgent reads your health data to sync it to the Mac app for AI analysis.</string>
+    <key>NSHealthUpdateUsageDescription</key>
+    <string>LumiAgent requires HealthKit access to sync health metrics.</string>
+
     <!-- ── Background modes ── -->
     <key>UIBackgroundModes</key>
     <array>

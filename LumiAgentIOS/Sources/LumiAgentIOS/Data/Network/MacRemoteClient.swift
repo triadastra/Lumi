@@ -262,7 +262,9 @@ public final class MacRemoteClient: ObservableObject {
     }
 
     public func ping() async throws -> RemoteCommandResponse {
-        try await send(RemoteCommand(commandType: .ping), timeout: 5)
+        let deviceName = UIDevice.current.name
+        let cmd = RemoteCommand(commandType: .ping, parameters: ["device_name": deviceName])
+        return try await send(cmd, timeout: 5)
     }
 
     public func pullSyncData(file: String) async throws -> Data {

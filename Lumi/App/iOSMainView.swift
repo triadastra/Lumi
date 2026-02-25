@@ -561,53 +561,7 @@ struct iOSRemoteControlView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        List {
-            Section {
-                VStack(spacing: 20) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.blue.opacity(0.1))
-                            .frame(width: 100, height: 100)
-                        Image(systemName: "desktopcomputer")
-                            .font(.system(size: 50))
-                            .foregroundStyle(.blue.gradient)
-                    }
-                    
-                    VStack(spacing: 8) {
-                        Text("Remote Control")
-                            .font(.title2.bold())
-                        Text("LumiAgent can discover and control your Mac running the desktop app. Ensure both devices are on the same Wi-Fi.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
-            }
-            .listRowBackground(Color.clear)
-
-            Section("Nearby Devices") {
-                HStack(spacing: 12) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Scanning for Macs...")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 4)
-            }
-
-            Section("Capabilities") {
-                Label("View Mac Screen", systemImage: "camera.viewfinder")
-                Label("Type & Press Keys", systemImage: "keyboard")
-                Label("Run Terminal Commands", systemImage: "terminal")
-                Label("Execute AppleScript", systemImage: "applescript")
-            }
-        }
-        .listStyle(.insetGrouped)
-        .navigationTitle("Mac Remote")
+        IOSRealRemoteControlView()
     }
 }
 

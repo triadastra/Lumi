@@ -56,6 +56,33 @@ struct HealthMetric: Identifiable {
     var weeklyData: [(label: String, value: Double)] = []
 }
 
+// MARK: - iOS Sync Data
+
+struct HealthMetricDTO: Codable {
+    let name: String
+    let value: String
+    let unit: String
+    let icon: String
+    let colorName: String
+    let date: Date
+    let weeklyData: [WeeklyDataPointDTO]
+}
+
+struct WeeklyDataPointDTO: Codable {
+    let label: String
+    let value: Double
+}
+
+struct HealthSyncData: Codable {
+    var activity: [HealthMetricDTO] = []
+    var heart: [HealthMetricDTO] = []
+    var body: [HealthMetricDTO] = []
+    var sleep: [HealthMetricDTO] = []
+    var workouts: [HealthMetricDTO] = []
+    var vitals: [HealthMetricDTO] = []
+    var updatedAt: Date = Date()
+}
+
 #if os(macOS)
 import AppKit
 import HealthKit
@@ -231,6 +258,14 @@ final class HealthKitManager: ObservableObject {
 
     private init() {
         isAvailable = HKHealthStore.isHealthDataAvailable()
+        
+        NotificationCenter.default.addObserver(forName: Notification.Name("lumi.dataRemoteUpdated"), object: nil, queue: .main) { [weak self] note in
+            if let file = note.object as? String, file == "health_data.json" {
+                Task { @MainActor in
+                    await self?.loadAllMetrics()
+                }
+            }
+        }
     }
 
     private var readTypes: Set<HKObjectType> {
@@ -307,34 +342,61 @@ final class HealthKitManager: ObservableObject {
         isLoading = true
         error = nil
 
-        // Fallback mode for macOS without HealthKit access: use local screen-time tracking.
-        guard isAvailable && isAuthorized else {
-            let fallback = loadScreenTimeFallbackMetrics()
-            activityMetrics = fallback
-            heartMetrics = []
-            bodyMetrics = []
-            sleepMetrics = []
-            workoutMetrics = []
-            vitalsMetrics = []
+        // Attempt to load synced data from iOS via Peer-to-Peer
+        if let rawData = DatabaseManager.shared.rawData(for: "health_data.json"),
+           let syncData = try? JSONDecoder().decode(HealthSyncData.self, from: rawData) {
+            
+            activityMetrics = loadScreenTimeFallbackMetrics() + syncData.activity.map { mapDTO($0) }
+            heartMetrics = syncData.heart.map { mapDTO($0) }
+            bodyMetrics = syncData.body.map { mapDTO($0) }
+            sleepMetrics = syncData.sleep.map { mapDTO($0) }
+            workoutMetrics = syncData.workouts.map { mapDTO($0) }
+            vitalsMetrics = syncData.vitals.map { mapDTO($0) }
+            
+            isAuthorized = true
             isLoading = false
             return
         }
 
-        async let a = loadActivityMetrics()
-        async let h = loadHeartMetrics()
-        async let b = loadBodyMetrics()
-        async let s = loadSleepMetrics()
-        async let w = loadWorkoutMetrics()
-        async let v = loadVitalsMetrics()
-        let (am, hm, bm, sm, wm, vm) = await (a, h, b, s, w, v)
-        activityMetrics = am
-        heartMetrics    = hm
-        bodyMetrics     = bm
-        sleepMetrics    = sm
-        workoutMetrics  = wm
-        vitalsMetrics   = vm
+        // Fallback mode for macOS without synced HealthKit access: use local screen-time tracking.
+        let fallback = loadScreenTimeFallbackMetrics()
+        activityMetrics = fallback
+        heartMetrics = []
+        bodyMetrics = []
+        sleepMetrics = []
+        workoutMetrics = []
+        vitalsMetrics = []
         isLoading = false
-        isAuthorized = true
+        isAuthorized = false
+    }
+
+    private func mapDTO(_ dto: HealthMetricDTO) -> HealthMetric {
+        let mappedColor: Color
+        switch dto.colorName.lowercased() {
+        case "green": mappedColor = .green
+        case "orange": mappedColor = .orange
+        case "yellow": mappedColor = .yellow
+        case "mint": mappedColor = .mint
+        case "teal": mappedColor = .teal
+        case "red": mappedColor = .red
+        case "pink": mappedColor = .pink
+        case "purple": mappedColor = .purple
+        case "blue": mappedColor = .blue
+        case "cyan": mappedColor = .cyan
+        case "indigo": mappedColor = .indigo
+        case "gray": mappedColor = .gray
+        default: mappedColor = .primary
+        }
+
+        return HealthMetric(
+            name: dto.name,
+            value: dto.value,
+            unit: dto.unit,
+            icon: dto.icon,
+            color: mappedColor,
+            date: dto.date,
+            weeklyData: dto.weeklyData.map { ($0.label, $0.value) }
+        )
     }
 
     func metricsForCategory(_ category: HealthCategory) -> [HealthMetric] {

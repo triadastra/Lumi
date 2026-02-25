@@ -149,6 +149,14 @@
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
 
+    <!-- Cross-device Sync & Remote Control (Bonjour) -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>LumiAgent needs local network access to discover and sync with your other devices.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_lumiagent._tcp</string>
+    </array>
+
     <!-- Allow network access to local and remote AI servers -->
     <key>NSAppTransportSecurity</key>
     <dict>

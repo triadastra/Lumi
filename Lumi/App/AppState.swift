@@ -86,6 +86,9 @@ final class AppState: ObservableObject {
 
     #if os(macOS)
     var automationEngine: AutomationEngine?
+    let remoteServer = MacRemoteServer.shared
+    private let usbObserver = USBDeviceObserver.shared
+    @Published var isUSBDeviceConnected: Bool = false
     #endif
 
     // MARK: - Init
@@ -104,12 +107,28 @@ final class AppState: ObservableObject {
             self.setupGlobalHotkey()
             self.startAutomationEngine()
             
+            self.usbObserver.onDeviceConnected = {
+                print("[AppState] iPhone/iPad detected via USB. Ready for sync.")
+                Task { @MainActor in
+                    self.isUSBDeviceConnected = true
+                }
+            }
+            self.usbObserver.onDeviceDisconnected = {
+                print("[AppState] iPhone/iPad disconnected from USB.")
+                Task { @MainActor in
+                    self.isUSBDeviceConnected = false
+                }
+            }
+            self.usbObserver.start()
+            
             self.hotkeyRefreshObserver = NotificationCenter.default.addObserver(
                 forName: .lumiGlobalHotkeysPreferenceChanged,
                 object: nil,
                 queue: .main
             ) { _ in
-                AppState.shared?.refreshGlobalHotkeys()
+                Task { @MainActor in
+                    AppState.shared?.refreshGlobalHotkeys()
+                }
             }
 
             NotificationCenter.default.addObserver(
@@ -117,9 +136,11 @@ final class AppState: ObservableObject {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.loadAgents()
-                self?.loadConversations()
-                self?.loadAutomations()
+                Task { @MainActor [weak self] in
+                    self?.loadAgents()
+                    self?.loadConversations()
+                    self?.loadAutomations()
+                }
             }
         }
         #endif
@@ -778,6 +799,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case health      = "Health"
     case history     = "History"
     case automation  = "Automations"
+    case devices     = "Paired Devices"
     case settings    = "Settings"
 
     var id: String { rawValue }
@@ -790,6 +812,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .health:      return "heart.fill"
         case .history:     return "clock.arrow.circlepath"
         case .automation:  return "bolt.horizontal"
+        case .devices:     return "iphone"
         case .settings:    return "gear"
         }
     }

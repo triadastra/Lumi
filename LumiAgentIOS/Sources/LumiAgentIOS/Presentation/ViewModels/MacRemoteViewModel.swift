@@ -38,6 +38,7 @@ public final class MacRemoteViewModel {
     public private(set) var remoteNowPlayingArtist: String?
     public private(set) var lastScreenshot: UIImage?
     public private(set) var lastCommandResult: String?
+    public private(set) var syncStatus: String?
     public private(set) var isBusy: Bool = false
 
     // MARK: - AppleScript sheet
@@ -69,6 +70,12 @@ public final class MacRemoteViewModel {
     public init() {
         bindDiscovery()
         bindClient()
+        
+        NotificationCenter.default.addObserver(forName: Notification.Name("lumi.triggerSync"), object: nil, queue: .main) { [weak self] _ in
+            Task {
+                await self?.autoSyncFromMac()
+            }
+        }
     }
 
     // MARK: - Bindings
@@ -101,10 +108,13 @@ public final class MacRemoteViewModel {
     // MARK: - Discovery
 
     public func startBrowsing() {
+        print("[MacRemote] Starting discovery...")
+        lastCommandResult = "Scanning for devices..."
         discovery.startBrowsing()
     }
 
     public func stopBrowsing() {
+        print("[MacRemote] Stopping discovery.")
         discovery.stopBrowsing()
     }
 
@@ -114,21 +124,28 @@ public final class MacRemoteViewModel {
         guard !isConnecting else { return }
         isConnecting = true
         connectionError = nil
+        lastCommandResult = "Connecting to \(device.name)..."
 
         Task {
             do {
                 try await client.connect(to: device)
                 connectedDevice = device
                 connectionError = nil
+                lastCommandResult = "Connected to \(device.name)"
+                print("[MacRemote] Connected successfully to \(device.name)")
                 
                 // 1. Initial State Refresh
                 await refreshRemoteState()
                 
                 // 2. Peer-to-Peer Auto Sync (Pull from Mac)
+                lastCommandResult = "Synchronizing data..."
                 await autoSyncFromMac()
+                lastCommandResult = "Sync Complete"
                 
             } catch {
                 connectionError = error.localizedDescription
+                lastCommandResult = "Connection failed"
+                print("[MacRemote] Connection error: \(error.localizedDescription)")
             }
             isConnecting = false
         }
@@ -140,6 +157,7 @@ public final class MacRemoteViewModel {
         let files = ["agents.json", "conversations.json", "automations.json"]
         for file in files {
             do {
+                syncStatus = "Pulling \(file)..."
                 let data = try await client.pullSyncData(file: file)
                 // Save to local iOS app storage
                 let url = baseURL().appendingPathComponent(file)
@@ -149,9 +167,15 @@ public final class MacRemoteViewModel {
                 print("⚠️ Failed to sync \(file): \(error.localizedDescription)")
             }
         }
+        syncStatus = "Sync Complete (\(files.count) files)"
         
-        // Notify local app state to reload (assuming it exists on iOS side)
-        // If AppState is shared, it will reload from these files on next access.
+        // Clear status after a delay
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if syncStatus?.contains("Complete") == true {
+                syncStatus = nil
+            }
+        }
     }
 
     private func baseURL() -> URL {
@@ -359,6 +383,43 @@ public final class MacRemoteViewModel {
         runCommand { [weak self] in
             guard let self else { throw RemoteClientError.notConnected }
             return try await self.client.pressKey(key, modifiers: modifiers)
+        }
+    }
+
+    // MARK: Health Sync
+
+    public func pushHealthToMac() {
+        guard !isBusy, connectedDevice != nil else { return }
+        isBusy = true
+        syncStatus = "Gathering Health Data..."
+        
+        Task {
+            do {
+                if !IOSHealthKitManager.shared.isAuthorized {
+                    syncStatus = "Requesting Access..."
+                    try await IOSHealthKitManager.shared.requestAuthorization()
+                }
+                
+                syncStatus = "Reading HealthKit..."
+                let healthData = await IOSHealthKitManager.shared.fetchSyncData()
+                let encoder = JSONEncoder()
+                let jsonData = try encoder.encode(healthData)
+                
+                syncStatus = "Pushing to Mac..."
+                try await client.pushSyncData(file: "health_data.json", data: jsonData)
+                syncStatus = "Health Synced Successfully"
+            } catch {
+                syncStatus = "Health Sync Failed: \(error.localizedDescription)"
+                print("[MacRemote] Health sync error: \(error.localizedDescription)")
+            }
+            isBusy = false
+            
+            Task {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                if syncStatus?.contains("Synced Successfully") == true || syncStatus?.contains("Failed") == true {
+                    syncStatus = nil
+                }
+            }
         }
     }
 }

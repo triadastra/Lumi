@@ -43,24 +43,39 @@ public final class MacRemoteServer {
     // MARK: - State
 
     @Published public private(set) var isRunning: Bool = false
-    @Published public private(set) var connectedClients: Int = 0
+    @Published public private(set) var connectedClients: [RemoteClientInfo] = []
     @Published public private(set) var lastError: String?
+    @Published public private(set) var pairingCode: String = ""
 
     // MARK: - Private
 
     private var listener: NWListener?
-    private var activeConnections: [NWConnection] = []
+    private var activeConnections: [UUID: NWConnection] = [:]
     private let queue = DispatchQueue(label: "com.lumiagent.server", qos: .userInitiated)
+    private var pairedDeviceNames: Set<String> = []
+    private let pairedDevicesKey = "lumi.remote.pairedDeviceNames"
 
-    private init() {}
+    private init() {
+        if let saved = UserDefaults.standard.array(forKey: pairedDevicesKey) as? [String] {
+            pairedDeviceNames = Set(saved)
+        }
+        pairingCode = Self.generatePairingCode()
+    }
 
     // MARK: - Start / Stop
 
     public func start() {
-        guard !isRunning else { return }
+        if isRunning || listener != nil {
+            print("[MacRemoteServer] Already running or starting...")
+            return
+        }
 
         do {
             let params = NWParameters.tcp
+            params.includePeerToPeer = true // Crucial for discovery
+            // Allow reusing the address if a previous process is still cleaning up
+            params.allowLocalEndpointReuse = true 
+            
             let listener = try NWListener(using: params, on: NWEndpoint.Port(integerLiteral: Self.port))
 
             // Advertise via Bonjour
@@ -84,24 +99,34 @@ public final class MacRemoteServer {
                 }
             }
 
-            listener.start(queue: queue)
             self.listener = listener
-            isRunning = true
-            print("[MacRemoteServer] Started on port \(Self.port), advertising as '\(hostname)'")
+            listener.start(queue: queue)
+            print("[MacRemoteServer] Starting on port \(Self.port), advertising as '\(hostname)'...")
         } catch {
             lastError = error.localizedDescription
-            print("[MacRemoteServer] Failed to start: \(error)")
+            isRunning = false
+            print("[MacRemoteServer] Failed to initialize listener: \(error)")
         }
     }
 
     public func stop() {
+        print("[MacRemoteServer] Stopping...")
         listener?.cancel()
         listener = nil
-        activeConnections.forEach { $0.cancel() }
+        activeConnections.values.forEach { $0.cancel() }
         activeConnections.removeAll()
+        connectedClients.removeAll()
         isRunning = false
-        connectedClients = 0
         print("[MacRemoteServer] Stopped")
+    }
+
+    public func regeneratePairingCode() {
+        pairingCode = Self.generatePairingCode()
+    }
+
+    public func clearPairedDevices() {
+        pairedDeviceNames.removeAll()
+        persistPairedDevices()
     }
 
     // MARK: - Listener State
@@ -109,13 +134,18 @@ public final class MacRemoteServer {
     private func handleListenerState(_ state: NWListener.State) {
         switch state {
         case .ready:
+            isRunning = true
+            lastError = nil
             print("[MacRemoteServer] Ready and advertising via Bonjour")
         case .failed(let error):
             lastError = error.localizedDescription
             isRunning = false
+            listener?.cancel()
+            listener = nil
             print("[MacRemoteServer] Listener failed: \(error)")
         case .cancelled:
             isRunning = false
+            listener = nil
         default:
             break
         }
@@ -124,60 +154,60 @@ public final class MacRemoteServer {
     // MARK: - Accept Connection
 
     private func accept(_ connection: NWConnection) {
-        activeConnections.append(connection)
-        connectedClients = activeConnections.count
-
-        var buffer = Data()
+        let connectionID = UUID()
+        activeConnections[connectionID] = connection
+        
+        let clientInfo = RemoteClientInfo(
+            id: connectionID,
+            name: "iPhone", // Initial placeholder
+            address: "\(connection.endpoint)",
+            connectedAt: Date()
+        )
+        connectedClients.append(clientInfo)
 
         connection.stateUpdateHandler = { [weak self] state in
             Task { @MainActor [weak self] in
                 if case .cancelled = state {
-                    self?.removeConnection(connection)
+                    self?.removeConnection(id: connectionID)
                 } else if case .failed = state {
-                    self?.removeConnection(connection)
+                    self?.removeConnection(id: connectionID)
                 }
             }
         }
 
         connection.start(queue: queue)
-        print("[MacRemoteServer] Client connected. Total: \(activeConnections.count)")
+        print("[MacRemoteServer] Client connected: \(connection.endpoint). Total: \(activeConnections.count)")
 
-        receiveLoop(on: connection, buffer: &buffer)
+        receiveNext(on: connection, bufferBox: BufferBox(), id: connectionID)
     }
 
-    private func removeConnection(_ connection: NWConnection) {
-        activeConnections.removeAll { $0 === connection }
-        connectedClients = activeConnections.count
+    private func removeConnection(id: UUID) {
+        activeConnections.removeValue(forKey: id)
+        connectedClients.removeAll { $0.id == id }
         print("[MacRemoteServer] Client disconnected. Remaining: \(activeConnections.count)")
     }
 
     // MARK: - Receive Loop
 
-    private func receiveLoop(on connection: NWConnection, buffer: inout Data) {
-        // Capture buffer as a class-level per-connection object
-        let bufferBox = BufferBox()
-        receiveNext(on: connection, bufferBox: bufferBox)
-    }
-
-    private func receiveNext(on connection: NWConnection, bufferBox: BufferBox) {
+    private func receiveNext(on connection: NWConnection, bufferBox: BufferBox, id: UUID) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             if let data = data {
                 bufferBox.buffer.append(data)
                 Task { @MainActor [weak self] in
-                    await self?.drainBuffer(bufferBox.buffer, connection: connection)
+                    await self?.drainBuffer(bufferBox.buffer, connection: connection, id: id)
                     bufferBox.buffer = Data()
                 }
             }
             if error != nil || isComplete { return }
             Task { @MainActor [weak self] in
-                self?.receiveNext(on: connection, bufferBox: bufferBox)
+                self?.receiveNext(on: connection, bufferBox: bufferBox, id: id)
             }
         }
     }
 
     // MARK: - Frame parsing
 
-    private func drainBuffer(_ data: Data, connection: NWConnection) async {
+    private func drainBuffer(_ data: Data, connection: NWConnection, id: UUID) async {
         var buffer = data
         while buffer.count >= 4 {
             let length = buffer.prefix(4).withUnsafeBytes {
@@ -190,11 +220,22 @@ public final class MacRemoteServer {
             buffer.removeFirst(totalNeeded)
 
             if let command = try? JSONDecoder().decode(RemoteCommandMessage.self, from: payload) {
+                // If ping, we might update device name if provided
+                if command.commandType == "ping", let deviceName = command.parameters["device_name"] {
+                    updateClientName(id: id, name: deviceName)
+                }
+                
                 let response = await execute(command)
                 if let frame = try? encodeResponse(response) {
                     connection.send(content: frame, completion: .contentProcessed { _ in })
                 }
             }
+        }
+    }
+
+    private func updateClientName(id: UUID, name: String) {
+        if let idx = connectedClients.firstIndex(where: { $0.id == id }) {
+            connectedClients[idx].name = name
         }
     }
 
@@ -209,6 +250,23 @@ public final class MacRemoteServer {
 
             // ── Ping ──────────────────────────────────────────────────────────────
             case "ping":
+                let deviceName = params["device_name"] ?? "Unknown iPhone"
+                let suppliedCode = params["pair_code"] ?? ""
+                let isKnown = pairedDeviceNames.contains(deviceName)
+                let isCodeValid = suppliedCode == pairingCode && !suppliedCode.isEmpty
+                if !isKnown && !isCodeValid {
+                    return RemoteResponseMessage(
+                        id: id,
+                        success: false,
+                        result: "",
+                        error: "Pairing required. Enter the code shown on your Mac."
+                    )
+                }
+                if !isKnown {
+                    pairedDeviceNames.insert(deviceName)
+                    persistPairedDevices()
+                    pairingCode = Self.generatePairingCode()
+                }
                 return RemoteResponseMessage(id: id, success: true, result: "pong")
 
             // ── Brightness ────────────────────────────────────────────────────────
@@ -517,6 +575,14 @@ public final class MacRemoteServer {
         frame.append(json)
         return frame
     }
+
+    private func persistPairedDevices() {
+        UserDefaults.standard.set(Array(pairedDeviceNames).sorted(), forKey: pairedDevicesKey)
+    }
+
+    private static func generatePairingCode() -> String {
+        String(format: "%06d", Int.random(in: 0...999999))
+    }
 }
 
 // MARK: - Buffer Box
@@ -527,6 +593,15 @@ private final class BufferBox {
 }
 
 // MARK: - Wire Types (macOS-side mirror of iOS RemoteCommand)
+
+// MARK: - Remote Client Info
+
+public struct RemoteClientInfo: Codable, Identifiable {
+    public let id: UUID
+    public var name: String
+    public let address: String
+    public let connectedAt: Date
+}
 
 private struct RemoteCommandMessage: Codable {
     let id: UUID

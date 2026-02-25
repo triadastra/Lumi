@@ -115,6 +115,17 @@ private struct EmptyDiscoveryView: View {
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
+                    
+                    Button {
+                        vm.stopBrowsing()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            vm.startBrowsing()
+                        }
+                    } label: {
+                        Label("Scan Again", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                 }
             } else {
                 ZStack {
@@ -129,6 +140,16 @@ private struct EmptyDiscoveryView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                
+                Button {
+                    vm.stopBrowsing()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        vm.startBrowsing()
+                    }
+                } label: {
+                    Label("Retry Discovery", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
             }
         }
         .padding(40)
@@ -184,9 +205,10 @@ private struct RemoteControlPanel: View {
             VStack(spacing: 24) {
                 // Connection banner
                 ConnectedBanner(deviceName: vm.connectedDevice?.name ?? "Mac",
-                                result: vm.lastCommandResult,
-                                isBusy: vm.isBusy)
+                                result: vm.syncStatus ?? vm.lastCommandResult,
+                                isBusy: vm.isBusy || vm.syncStatus != nil)
 
+                RemoteHealthCard(vm: vm)
                 RemoteBrightnessCard(vm: vm)
                 RemoteVolumeCard(vm: vm)
                 RemoteMediaCard(vm: vm)
@@ -245,7 +267,54 @@ private struct ConnectedBanner: View {
                 Spacer()
                 if isBusy {
                     ProgressView().controlSize(.small)
+                } else {
+                    Button {
+                        // Use a trigger to run autoSyncFromMac
+                        NotificationCenter.default.post(name: Notification.Name("lumi.triggerSync"), object: nil)
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.blue)
+                    }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Remote Health Card
+
+private struct RemoteHealthCard: View {
+    @Bindable var vm: MacRemoteViewModel
+
+    var body: some View {
+        LumiCard {
+            VStack(alignment: .leading, spacing: 16) {
+                Label("Health Sync", systemImage: "heart.fill")
+                    .font(.headline)
+                    .foregroundStyle(.pink.gradient)
+
+                Text("Send your iPhone's Apple Health data to your Mac's Health panel for AI analysis.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                Button {
+                    vm.pushHealthToMac()
+                } label: {
+                    HStack {
+                        Image(systemName: "heart.text.square.fill")
+                        Text("Sync Health Data to Mac")
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.pink.opacity(0.1))
+                    .foregroundStyle(.pink)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.isBusy)
             }
         }
     }

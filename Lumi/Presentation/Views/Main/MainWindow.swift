@@ -138,6 +138,8 @@ struct ContentListView: View {
                 ToolHistoryListView()
             case .automation:
                 AutomationListView()
+            case .devices:
+                DevicesListView()
             case .settings:
                 SettingsListView()
             }
@@ -180,6 +182,8 @@ struct DetailView: View {
                 }
             case .automation:
                 AutomationDetailView()
+            case .devices:
+                DevicesDetailView()
             case .settings:
                 SettingsDetailView()
             }
