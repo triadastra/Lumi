@@ -10,6 +10,26 @@
 #if os(macOS)
 import SwiftUI
 
+// MARK: - Visual Effect View
+
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material
+    var blendingMode: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
+
 // MARK: - Main Window
 
 struct MainWindow: View {
@@ -21,16 +41,26 @@ struct MainWindow: View {
             // Sidebar
             SidebarView()
                 .frame(minWidth: 200)
+                .background(.ultraThinMaterial.opacity(0.5))
         } content: {
             // Content (list view)
             ContentListView()
                 .frame(minWidth: 300)
+                .background(.ultraThickMaterial.opacity(0.8))
         } detail: {
             // Detail view
             DetailView()
                 .frame(minWidth: 400)
+                .background(.ultraThickMaterial)
         }
         .navigationTitle("Lumi Agent")
+        .background(
+            ZStack {
+                Color.black.opacity(0.35)
+                VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
+            }
+            .ignoresSafeArea()
+        )
         .toolbar {
             if appState.selectedSidebarItem == .agentSpace {
                 ToolbarItem(placement: .primaryAction) {
@@ -55,16 +85,6 @@ struct MainWindow: View {
         }
         .environmentObject(executionEngine)
         .focusedSceneValue(\.executionEngine, executionEngine)
-        // Show / hide the floating screen-control HUD based on agent state
-        .onChange(of: appState.isAgentControllingScreen) { _, isControlling in
-            if isControlling {
-                ScreenControlOverlayController.shared.show {
-                    appState.stopAgentControl()
-                }
-            } else {
-                ScreenControlOverlayController.shared.hide()
-            }
-        }
     }
 
     func executeCurrentAgent() async {
@@ -99,6 +119,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
     }
 }
 
@@ -126,6 +147,7 @@ struct ContentListView: View {
                 SettingsListView()
             }
         }
+        .scrollContentBackground(.hidden)
     }
 }
 

@@ -22,15 +22,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSUpdateDynamicServices()
         NSApp.activate(ignoringOtherApps: true)
 
+        // Configure main window for glass look
+        if let window = NSApp.windows.first {
+            setupGlassWindow(window)
+        }
+
         // Set up menu bar icon
         setupMenuBar()
 
         // Start the iOS remote-control server.
-        // Advertises on Bonjour (_lumiagent._tcp, port 47285) so the iOS
-        // LumiAgent app can discover and connect to this Mac automatically.
         Task { @MainActor in
             MacRemoteServer.shared.start()
         }
+    }
+
+    private func setupGlassWindow(_ window: NSWindow) {
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.isOpaque = false
     }
 
     private func setupMenuBar() {

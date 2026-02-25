@@ -209,7 +209,6 @@ final class ScreenTimeTracker {
 
 @MainActor
 final class HealthKitManager: ObservableObject {
-    nonisolated let objectWillChange = ObservableObjectPublisher()
     static let shared = HealthKitManager()
 
     private let store = HKHealthStore()

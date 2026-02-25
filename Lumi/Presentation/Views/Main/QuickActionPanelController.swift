@@ -181,8 +181,6 @@ final class QuickActionPanelController: NSObject {
 // MARK: - Agent Reply Bubble Model
 
 class AgentReplyBubbleModel: NSObject, ObservableObject {
-    // Required: SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor prevents auto-synthesis
-    nonisolated let objectWillChange = ObservableObjectPublisher()
 
     @Published var text: String = ""
     @Published var userInput: String = ""

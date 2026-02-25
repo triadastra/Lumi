@@ -62,6 +62,7 @@ struct AgentSpaceView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
         .navigationTitle("Agent Space")
         .toolbar {
             Button {

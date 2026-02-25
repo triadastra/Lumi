@@ -9,7 +9,6 @@ import Combine
 
 @MainActor
 final class SystemPermissionManager: ObservableObject {
-    nonisolated let objectWillChange = ObservableObjectPublisher()
     static let shared = SystemPermissionManager()
     
     @Published var isAccessibilityGranted = false

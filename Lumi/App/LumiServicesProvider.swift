@@ -64,6 +64,7 @@ final class LumiServicesProvider: NSObject {
         var transformed: String?
         var failure: String?
 
+        // Perform the work on the MainActor but wait on a background queue to avoid deadlocking the main thread
         Task { @MainActor in
             defer { semaphore.signal() }
             do {
@@ -73,7 +74,13 @@ final class LumiServicesProvider: NSObject {
             }
         }
 
-        _ = semaphore.wait(timeout: .now() + 60)
+        // Wait on a background queue to avoid blocking the MainActor if this is called from there
+        let result = semaphore.wait(timeout: .now() + 60)
+        
+        if result == .timedOut {
+            error.pointee = "Text transformation timed out." as NSString
+            return
+        }
 
         if let transformed, !transformed.isEmpty {
             pboard.clearContents()

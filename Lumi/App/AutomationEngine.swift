@@ -72,13 +72,25 @@ final class AutomationEngine {
             }
         )
 
-        // Snapshot current Bluetooth state
-        connectedDevices = Self.currentBluetoothDevices()
+        // Snapshot current Bluetooth state in background
+        Task.detached(priority: .background) { [weak self] in
+            let devices = Self.currentBluetoothDevices()
+            await MainActor.run { [weak self] in
+                self?.connectedDevices = devices
+            }
+        }
 
         // 15-second polling timer for Bluetooth diffs and schedule checks
         let t = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            self?.pollBluetooth()
-            self?.checkSchedules()
+            guard let self = self else { return }
+            Task.detached(priority: .background) { [weak self] in
+                guard let self = self else { return }
+                let current = Self.currentBluetoothDevices()
+                await MainActor.run { [weak self] in
+                    self?.handleBluetoothUpdate(current)
+                    self?.checkSchedules()
+                }
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
@@ -119,8 +131,7 @@ final class AutomationEngine {
         }
     }
 
-    private func pollBluetooth() {
-        let current = Self.currentBluetoothDevices()
+    private func handleBluetoothUpdate(_ current: Set<String>) {
         let connected    = current.subtracting(connectedDevices)
         let disconnected = connectedDevices.subtracting(current)
         connectedDevices = current

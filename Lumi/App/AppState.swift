@@ -26,7 +26,6 @@ private let screenControlToolNames: Set<String> = [
 
 @MainActor
 final class AppState: ObservableObject {
-    nonisolated let objectWillChange = ObservableObjectPublisher()
     static weak var shared: AppState?
 
     // MARK: - Sidebar / Navigation
@@ -49,7 +48,6 @@ final class AppState: ObservableObject {
 
     func setDefaultAgent(_ id: UUID?) {
         defaultExteriorAgentId = id
-        objectWillChange.send()
     }
 
     // MARK: - Agent Space
@@ -93,15 +91,24 @@ final class AppState: ObservableObject {
     // MARK: - Init
 
     init() {
+        print("🚀 AppState init started")
         Self.shared = self
+        print("📦 Initializing DatabaseManager")
         _ = DatabaseManager.shared
+        print("👥 Loading Agents")
         loadAgents()
+        print("💬 Loading Conversations")
         loadConversations()
+        print("🤖 Loading Automations")
         loadAutomations()
         
         #if os(macOS)
-        Task { @MainActor in
+        print("🖥️ Starting macOS async setup")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            print("⌨️ Setting up Global Hotkeys")
             self.setupGlobalHotkey()
+            print("⚙️ Starting Automation Engine")
             self.startAutomationEngine()
             
             self.hotkeyRefreshObserver = NotificationCenter.default.addObserver(
@@ -111,8 +118,10 @@ final class AppState: ObservableObject {
             ) { [weak self] _ in
                 self?.refreshGlobalHotkeys()
             }
+            print("✅ AppState macOS setup complete")
         }
         #endif
+        print("🚀 AppState init finished")
     }
 
     // MARK: - Command Palette Message (Shared)

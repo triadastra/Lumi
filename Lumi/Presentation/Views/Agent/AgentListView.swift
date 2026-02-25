@@ -16,6 +16,7 @@ struct AgentListView: View {
             AgentRowView(agent: agent)
                 .tag(agent.id)
         }
+        .scrollContentBackground(.hidden)
         .navigationTitle("Agents")
         .toolbar {
             Button {

@@ -16,7 +16,6 @@ import Combine
 /// Orchestrates agent lifecycle and coordinates AI ↔ tool execution
 @MainActor
 final class AgentExecutionEngine: ObservableObject {
-    nonisolated let objectWillChange = ObservableObjectPublisher()
 
     // MARK: - Published Properties
 

@@ -4,7 +4,6 @@ import Foundation
 
 @MainActor
 final class OpenAIVoiceManager: NSObject, ObservableObject {
-    nonisolated let objectWillChange = ObservableObjectPublisher()
     @Published var isRecording = false
     @Published var isProcessing = false
     @Published var lastError: String?
