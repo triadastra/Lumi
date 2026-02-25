@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Bundle Identifier - REQUIRED for macOS system APIs -->
+    <key>CFBundleIdentifier</key>
+    <string>com.lumiagent.app</string>
+    
+    <!-- App Info -->
+    <key>CFBundleName</key>
+    <string>LumiAgent</string>
+    
+    <key>CFBundleDisplayName</key>
+    <string>Lumi Agent</string>
+    
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>Lumi: Extend</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>extendSelectedText</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>public.utf8-plain-text</string>
+                <string>NSStringPboardType</string>
+            </array>
+            <key>NSReturnTypes</key>
+            <array>
+                <string>public.utf8-plain-text</string>
+                <string>NSStringPboardType</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>Lumi: Correct Grammar</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>correctGrammar</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>public.utf8-plain-text</string>
+                <string>NSStringPboardType</string>
+            </array>
+            <key>NSReturnTypes</key>
+            <array>
+                <string>public.utf8-plain-text</string>
+                <string>NSStringPboardType</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>Lumi: Auto Resolve Text</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>autoResolveText</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>public.utf8-plain-text</string>
+                <string>NSStringPboardType</string>
+            </array>
+            <key>NSReturnTypes</key>
+            <array>
+                <string>public.utf8-plain-text</string>
+                <string>NSStringPboardType</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>Lumi: Clean Desktop (Safe)</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>cleanDesktopService</string>
+        </dict>
+    </array>
+    
+    <!-- Permissions for macOS features -->
+    <key>NSAppleEventsUsageDescription</key>
+    <string>LumiAgent needs to control apps via AppleScript to automate tasks.</string>
+    
+    <key>NSAccessibilityUsageDescription</key>
+    <string>LumiAgent needs accessibility access to control the mouse, keyboard, and screen.</string>
+    
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>LumiAgent needs to capture screenshots for visual AI analysis.</string>
+    
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>LumiAgent can manage Bluetooth devices at your request.</string>
+    
+    <key>NSMicrophoneUsageDescription</key>
+    <string>LumiAgent may need microphone access for voice-based features.</string>
+
+    <key>NSCameraUsageDescription</key>
+    <string>LumiAgent may use camera access for vision-based features you enable.</string>
+    
+    <!-- App Capabilities -->
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    
+    <!-- High Resolution Support -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    
+    <!-- Main Storyboard (if using) -->
+    <key>NSMainStoryboardFile</key>
+    <string></string>
+    
+    <!-- Principle Class -->
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!-- App Icon -->
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+</dict>
+</plist>
