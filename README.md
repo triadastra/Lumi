@@ -22,6 +22,7 @@ Agents can read and write files, run shell commands, search the web, control the
 - macOS Services integration (right-click menu)
 - Automation rules triggered by app launch, schedule, Bluetooth, screen unlock, and more
 - Optional desktop control: mouse, keyboard, screenshots, AppleScript
+<img width="1112" height="764" alt="Screenshot 2026-02-25 at 10 48 47 PM" src="https://github.com/user-attachments/assets/3641b2f7-1e5b-4121-bbec-3e5b66eaa7d7" />
 
 
 **iOS companion**
