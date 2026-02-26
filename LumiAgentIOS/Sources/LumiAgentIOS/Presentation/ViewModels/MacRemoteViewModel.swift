@@ -39,6 +39,7 @@ public final class MacRemoteViewModel {
     public private(set) var lastScreenshot: UIImage?
     public private(set) var lastCommandResult: String?
     public private(set) var syncStatus: String?
+    public private(set) var syncProgress: Double = 0.0
     public private(set) var isBusy: Bool = false
 
     // MARK: - AppleScript sheet
@@ -154,27 +155,57 @@ public final class MacRemoteViewModel {
     private func autoSyncFromMac() async {
         guard connectedDevice != nil else { return }
         
-        let files = ["agents.json", "conversations.json", "automations.json"]
-        for file in files {
+        let files = [
+            "agents.json",
+            "conversations.json",
+            "automations.json",
+            "sync_settings.json",
+            "sync_api_keys.json"
+        ]
+        
+        syncProgress = 0.0
+        let total = Double(files.count)
+        
+        for (index, file) in files.enumerated() {
             do {
-                syncStatus = "Pulling \(file)..."
+                let friendlyName = friendlyFileName(file)
+                syncStatus = "Syncing \(friendlyName)..."
+                
                 let data = try await client.pullSyncData(file: file)
-                // Save to local iOS app storage
+                
+                // Save to local iOS app storage - move to background to avoid main actor stalls
                 let url = baseURL().appendingPathComponent(file)
-                try data.write(to: url, options: .atomic)
+                try await Task.detached(priority: .background) {
+                    try data.write(to: url, options: .atomic)
+                }.value
+                
                 print("✅ Synced \(file) from Mac")
             } catch {
                 print("⚠️ Failed to sync \(file): \(error.localizedDescription)")
             }
+            syncProgress = Double(index + 1) / total
         }
-        syncStatus = "Sync Complete (\(files.count) files)"
+        
+        syncStatus = "Sync Complete (\(files.count) items)"
         
         // Clear status after a delay
         Task {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if syncStatus?.contains("Complete") == true {
                 syncStatus = nil
+                syncProgress = 0.0
             }
+        }
+    }
+
+    private func friendlyFileName(_ file: String) -> String {
+        switch file {
+        case "agents.json": return "Agents"
+        case "conversations.json": return "Chats"
+        case "automations.json": return "Automations"
+        case "sync_settings.json": return "Settings"
+        case "sync_api_keys.json": return "API Keys"
+        default: return file
         }
     }
 

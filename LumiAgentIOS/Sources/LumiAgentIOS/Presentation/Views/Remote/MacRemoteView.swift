@@ -206,7 +206,8 @@ private struct RemoteControlPanel: View {
                 // Connection banner
                 ConnectedBanner(deviceName: vm.connectedDevice?.name ?? "Mac",
                                 result: vm.syncStatus ?? vm.lastCommandResult,
-                                isBusy: vm.isBusy || vm.syncStatus != nil)
+                                syncProgress: vm.syncProgress,
+                                isBusy: vm.isBusy || (vm.syncStatus != nil && vm.syncProgress == 0))
 
                 RemoteHealthCard(vm: vm)
                 RemoteBrightnessCard(vm: vm)
@@ -242,6 +243,7 @@ private struct RemoteControlPanel: View {
 private struct ConnectedBanner: View {
     let deviceName: String
     let result: String?
+    let syncProgress: Double
     let isBusy: Bool
 
     var body: some View {
@@ -262,6 +264,12 @@ private struct ConnectedBanner: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
+                    }
+                    if syncProgress > 0 && syncProgress < 1.0 {
+                        ProgressView(value: syncProgress)
+                            .tint(.green)
+                            .scaleEffect(x: 1, y: 0.5, anchor: .center)
+                            .padding(.top, 2)
                     }
                 }
                 Spacer()
