@@ -24,6 +24,7 @@ import AppKit
 import Foundation
 import Network
 import Combine
+import Darwin
 
 // MARK: - Mac Remote Server
 
@@ -45,22 +46,17 @@ public final class MacRemoteServer {
     @Published public private(set) var isRunning: Bool = false
     @Published public private(set) var connectedClients: [RemoteClientInfo] = []
     @Published public private(set) var lastError: String?
-    @Published public private(set) var pairingCode: String = ""
+    @Published public private(set) var pendingApprovals: [RemoteConnectionApproval] = []
 
     // MARK: - Private
 
     private var listener: NWListener?
     private var activeConnections: [UUID: NWConnection] = [:]
     private let queue = DispatchQueue(label: "com.lumiagent.server", qos: .userInitiated)
-    private var pairedDeviceNames: Set<String> = []
-    private let pairedDevicesKey = "lumi.remote.pairedDeviceNames"
+    private var approvedConnections: Set<UUID> = []
+    private var rejectedConnections: Set<UUID> = []
 
-    private init() {
-        if let saved = UserDefaults.standard.array(forKey: pairedDevicesKey) as? [String] {
-            pairedDeviceNames = Set(saved)
-        }
-        pairingCode = Self.generatePairingCode()
-    }
+    private init() {}
 
     // MARK: - Start / Stop
 
@@ -116,17 +112,61 @@ public final class MacRemoteServer {
         activeConnections.values.forEach { $0.cancel() }
         activeConnections.removeAll()
         connectedClients.removeAll()
+        approvedConnections.removeAll()
+        rejectedConnections.removeAll()
+        pendingApprovals.removeAll()
         isRunning = false
         print("[MacRemoteServer] Stopped")
     }
 
-    public func regeneratePairingCode() {
-        pairingCode = Self.generatePairingCode()
+    public func approveConnection(_ id: UUID) {
+        pendingApprovals.removeAll { $0.id == id }
+        rejectedConnections.remove(id)
+        approvedConnections.insert(id)
     }
 
-    public func clearPairedDevices() {
-        pairedDeviceNames.removeAll()
-        persistPairedDevices()
+    public func rejectConnection(_ id: UUID) {
+        pendingApprovals.removeAll { $0.id == id }
+        approvedConnections.remove(id)
+        rejectedConnections.insert(id)
+        activeConnections[id]?.cancel()
+    }
+
+    public func connectionHints() -> [String] {
+        let port = String(Self.port)
+        var hints: Set<String> = ["localhost:\(port)"]
+
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else {
+            return Array(hints).sorted()
+        }
+        defer { freeifaddrs(ifaddr) }
+
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let p = cursor {
+            let flags = Int32(p.pointee.ifa_flags)
+            let isUp = (flags & IFF_UP) != 0
+            let isLoopback = (flags & IFF_LOOPBACK) != 0
+            if isUp, !isLoopback, let addr = p.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) {
+                var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                let result = getnameinfo(
+                    addr,
+                    socklen_t(addr.pointee.sa_len),
+                    &host,
+                    socklen_t(host.count),
+                    nil,
+                    0,
+                    NI_NUMERICHOST
+                )
+                if result == 0 {
+                    let ip = String(cString: host)
+                    hints.insert("\(ip):\(port)")
+                }
+            }
+            cursor = p.pointee.ifa_next
+        }
+
+        return Array(hints).sorted()
     }
 
     // MARK: - Listener State
@@ -155,12 +195,20 @@ public final class MacRemoteServer {
 
     private func accept(_ connection: NWConnection) {
         let connectionID = UUID()
+        let endpointString = "\(connection.endpoint)"
+
+        // Replace stale duplicate entries for the same network endpoint.
+        if let stale = connectedClients.first(where: { $0.address == endpointString }) {
+            activeConnections[stale.id]?.cancel()
+            removeConnection(id: stale.id)
+        }
+
         activeConnections[connectionID] = connection
         
         let clientInfo = RemoteClientInfo(
             id: connectionID,
             name: "iPhone", // Initial placeholder
-            address: "\(connection.endpoint)",
+            address: endpointString,
             connectedAt: Date()
         )
         connectedClients.append(clientInfo)
@@ -184,6 +232,9 @@ public final class MacRemoteServer {
     private func removeConnection(id: UUID) {
         activeConnections.removeValue(forKey: id)
         connectedClients.removeAll { $0.id == id }
+        pendingApprovals.removeAll { $0.id == id }
+        approvedConnections.remove(id)
+        rejectedConnections.remove(id)
         print("[MacRemoteServer] Client disconnected. Remaining: \(activeConnections.count)")
     }
 
@@ -225,7 +276,7 @@ public final class MacRemoteServer {
                     updateClientName(id: id, name: deviceName)
                 }
                 
-                let response = await execute(command)
+                let response = await execute(command, from: id)
                 if let frame = try? encodeResponse(response) {
                     connection.send(content: frame, completion: .contentProcessed { _ in })
                 }
@@ -237,11 +288,18 @@ public final class MacRemoteServer {
         if let idx = connectedClients.firstIndex(where: { $0.id == id }) {
             connectedClients[idx].name = name
         }
+
+        // Keep one active row per device name to avoid list explosion on reconnects.
+        let duplicates = connectedClients.filter { $0.name == name && $0.id != id }.map(\.id)
+        for dup in duplicates {
+            activeConnections[dup]?.cancel()
+            removeConnection(id: dup)
+        }
     }
 
     // MARK: - Command Execution
 
-    private func execute(_ command: RemoteCommandMessage) async -> RemoteResponseMessage {
+    private func execute(_ command: RemoteCommandMessage, from connectionID: UUID) async -> RemoteResponseMessage {
         let id = command.id
         let params = command.parameters
 
@@ -251,21 +309,36 @@ public final class MacRemoteServer {
             // ── Ping ──────────────────────────────────────────────────────────────
             case "ping":
                 let deviceName = params["device_name"] ?? "Unknown iPhone"
-                let suppliedCode = params["pair_code"] ?? ""
-                let isKnown = pairedDeviceNames.contains(deviceName)
-                let isCodeValid = suppliedCode == pairingCode && !suppliedCode.isEmpty
-                if !isKnown && !isCodeValid {
+                updateClientName(id: connectionID, name: deviceName)
+
+                if rejectedConnections.contains(connectionID) {
                     return RemoteResponseMessage(
                         id: id,
                         success: false,
                         result: "",
-                        error: "Pairing required. Enter the code shown on your Mac."
+                        error: "Connection rejected by Mac."
                     )
                 }
-                if !isKnown {
-                    pairedDeviceNames.insert(deviceName)
-                    persistPairedDevices()
-                    pairingCode = Self.generatePairingCode()
+
+                if !approvedConnections.contains(connectionID) {
+                    if !pendingApprovals.contains(where: { $0.id == connectionID }) {
+                        let address = connectedClients.first(where: { $0.id == connectionID })?.address ?? ""
+                        pendingApprovals.append(
+                            RemoteConnectionApproval(
+                                id: connectionID,
+                                name: deviceName,
+                                address: address,
+                                requestedAt: Date()
+                            )
+                        )
+                        NSApp.requestUserAttention(.criticalRequest)
+                    }
+                    return RemoteResponseMessage(
+                        id: id,
+                        success: false,
+                        result: "",
+                        error: "Awaiting approval on Mac. Please accept this connection."
+                    )
                 }
                 return RemoteResponseMessage(id: id, success: true, result: "pong")
 
@@ -359,6 +432,33 @@ public final class MacRemoteServer {
                 let h = Int(NSScreen.main?.frame.height ?? 0)
                 return RemoteResponseMessage(id: id, success: true,
                                              result: "Width: \(w)\nHeight: \(h)")
+
+            // ── Mouse ─────────────────────────────────────────────────────────────
+            case "move_mouse":
+                guard let x = Double(params["x"] ?? ""), let y = Double(params["y"] ?? "") else {
+                    return RemoteResponseMessage(id: id, success: false, result: "", error: "Missing x/y for move_mouse")
+                }
+                try moveMouse(to: CGPoint(x: x, y: y))
+                return RemoteResponseMessage(id: id, success: true, result: "Mouse moved to (\(Int(x)), \(Int(y)))")
+
+            case "click_mouse":
+                let buttonString = (params["button"] ?? "left").lowercased()
+                let button: CGMouseButton = (buttonString == "right") ? .right : .left
+                let point: CGPoint
+                if let x = Double(params["x"] ?? ""), let y = Double(params["y"] ?? "") {
+                    point = CGPoint(x: x, y: y)
+                    try moveMouse(to: point)
+                } else {
+                    point = currentMouseLocation()
+                }
+                try clickMouse(at: point, button: button)
+                return RemoteResponseMessage(id: id, success: true, result: "Mouse click \(buttonString)")
+
+            case "scroll_mouse":
+                let dx = Int32(params["delta_x"] ?? "0") ?? 0
+                let dy = Int32(params["delta_y"] ?? "0") ?? Int32(params["delta"] ?? "0") ?? 0
+                try scrollMouse(deltaX: dx, deltaY: dy)
+                return RemoteResponseMessage(id: id, success: true, result: "Mouse scrolled (\(dx), \(dy))")
 
             // ── Type Text ─────────────────────────────────────────────────────────
             case "type_text":
@@ -454,6 +554,16 @@ public final class MacRemoteServer {
             // ── Data Sync ─────────────────────────────────────────────────────────
             case "get_sync_data":
                 let fileName = params["file"] ?? "agents.json"
+                if fileName == "sync_settings.json" {
+                    let payload = exportedSettingsJSON()
+                    let b64 = payload.base64EncodedString()
+                    return RemoteResponseMessage(id: id, success: true, result: "Sync settings", imageData: b64)
+                }
+                if fileName == "sync_api_keys.json" {
+                    let payload = exportedAPIKeysJSON()
+                    let b64 = payload.base64EncodedString()
+                    return RemoteResponseMessage(id: id, success: true, result: "Sync API keys", imageData: b64)
+                }
                 if let data = DatabaseManager.shared.rawData(for: fileName) {
                     let b64 = data.base64EncodedString()
                     return RemoteResponseMessage(id: id, success: true, result: "Sync data for \(fileName)", imageData: b64)
@@ -576,12 +686,77 @@ public final class MacRemoteServer {
         return frame
     }
 
-    private func persistPairedDevices() {
-        UserDefaults.standard.set(Array(pairedDeviceNames).sorted(), forKey: pairedDevicesKey)
+    private func currentMouseLocation() -> CGPoint {
+        CGEvent(source: nil)?.location ?? .zero
     }
 
-    private static func generatePairingCode() -> String {
-        String(format: "%06d", Int.random(in: 0...999999))
+    private func moveMouse(to point: CGPoint) throws {
+        guard let move = CGEvent(
+            mouseEventSource: nil,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ) else {
+            throw NSError(domain: "Mouse", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create move event"])
+        }
+        move.post(tap: .cghidEventTap)
+    }
+
+    private func clickMouse(at point: CGPoint, button: CGMouseButton) throws {
+        let downType: CGEventType = (button == .right) ? .rightMouseDown : .leftMouseDown
+        let upType: CGEventType = (button == .right) ? .rightMouseUp : .leftMouseUp
+        guard let down = CGEvent(mouseEventSource: nil, mouseType: downType, mouseCursorPosition: point, mouseButton: button),
+              let up = CGEvent(mouseEventSource: nil, mouseType: upType, mouseCursorPosition: point, mouseButton: button) else {
+            throw NSError(domain: "Mouse", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to create click event"])
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
+    private func scrollMouse(deltaX: Int32, deltaY: Int32) throws {
+        guard let scroll = CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 2,
+            wheel1: deltaY,
+            wheel2: deltaX,
+            wheel3: 0
+        ) else {
+            throw NSError(domain: "Mouse", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create scroll event"])
+        }
+        scroll.post(tap: .cghidEventTap)
+    }
+
+    private func exportedSettingsJSON() -> Data {
+        let keys = UserDefaults.standard.dictionaryRepresentation().keys
+            .filter {
+                $0.hasPrefix("settings.") ||
+                $0.hasPrefix("account.") ||
+                $0.hasPrefix("preferences.")
+            }
+            .sorted()
+
+        var dict: [String: Any] = [:]
+        for key in keys {
+            if let value = UserDefaults.standard.object(forKey: key),
+               JSONSerialization.isValidJSONObject([key: value]) {
+                dict[key] = value
+            }
+        }
+        return (try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+    }
+
+    private func exportedAPIKeysJSON() -> Data {
+        let keys = UserDefaults.standard.dictionaryRepresentation().keys
+            .filter { $0.hasPrefix("lumiagent.apikey.") }
+            .sorted()
+        var dict: [String: String] = [:]
+        for key in keys {
+            if let value = UserDefaults.standard.string(forKey: key), !value.isEmpty {
+                dict[key] = value
+            }
+        }
+        return (try? JSONEncoder().encode(dict)) ?? Data()
     }
 }
 
@@ -601,6 +776,13 @@ public struct RemoteClientInfo: Codable, Identifiable {
     public var name: String
     public let address: String
     public let connectedAt: Date
+}
+
+public struct RemoteConnectionApproval: Identifiable {
+    public let id: UUID
+    public let name: String
+    public let address: String
+    public let requestedAt: Date
 }
 
 private struct RemoteCommandMessage: Codable {

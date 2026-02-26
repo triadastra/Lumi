@@ -211,6 +211,14 @@ final class IOSMacRemoteClient: ObservableObject {
         }
     }
 
+    func connect(host: String, port: UInt16 = 47285) async throws {
+        let target = NWEndpoint.Host(host)
+        guard let p = NWEndpoint.Port(rawValue: port) else {
+            throw NSError(domain: "Remote", code: 5, userInfo: [NSLocalizedDescriptionKey: "Invalid port"])
+        }
+        try await connect(to: .hostPort(host: target, port: p))
+    }
+
     func disconnect() {
         connection?.cancel()
         connection = nil
@@ -306,8 +314,8 @@ final class IOSRealRemoteViewModel: ObservableObject {
     @Published private(set) var connectedDevice: IOSRemoteDevice?
     @Published private(set) var isBusy = false
     @Published var status: String?
-    @Published var pairCode = ""
     @Published var shellCommand = ""
+    @Published var directHost: String = UserDefaults.standard.string(forKey: "remote.directHost") ?? ""
 
     let discovery = IOSBonjourDiscovery()
     let client = IOSMacRemoteClient()
@@ -336,28 +344,74 @@ final class IOSRealRemoteViewModel: ObservableObject {
         Task {
             do {
                 try await client.connect(to: device.endpoint)
-                let code = pairCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                let ping = try await client.send(
-                    "ping",
-                    parameters: [
-                        "device_name": UIDevice.current.name,
-                        "pair_code": code
-                    ],
-                    timeout: 5
-                )
-                guard ping.success else {
-                    status = ping.error ?? "Pairing failed"
-                    client.disconnect()
-                    isBusy = false
-                    return
-                }
+                try await awaitApproval()
                 connectedDevice = device
                 status = "Connected to \(device.name)"
+                await autoSyncFromMac()
             } catch {
                 status = error.localizedDescription
                 client.disconnect()
             }
             isBusy = false
+        }
+    }
+
+    func connectDirect() {
+        let host = directHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { return }
+        guard !isBusy else { return }
+        isBusy = true
+        status = "Connecting directly to \(host)..."
+        UserDefaults.standard.set(host, forKey: "remote.directHost")
+
+        Task {
+            do {
+                try await client.connect(host: host, port: 47285)
+                try await awaitApproval()
+                connectedDevice = IOSRemoteDevice(
+                    name: host,
+                    serviceName: host,
+                    endpoint: .hostPort(host: .init(host), port: .init(integerLiteral: 47285)),
+                    state: .connected
+                )
+                status = "Connected to \(host)"
+                await autoSyncFromMac()
+            } catch {
+                status = error.localizedDescription
+                client.disconnect()
+            }
+            isBusy = false
+        }
+    }
+
+    private func awaitApproval() async throws {
+        var approved = false
+        for _ in 0..<20 {
+            let ping = try await client.send(
+                "ping",
+                parameters: ["device_name": UIDevice.current.name],
+                timeout: 5
+            )
+            if ping.success {
+                approved = true
+                break
+            }
+
+            let errorText = ping.error ?? "Connection refused"
+            status = errorText
+            if errorText.localizedCaseInsensitiveContains("awaiting approval") {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                continue
+            }
+            throw NSError(domain: "Remote", code: 7, userInfo: [NSLocalizedDescriptionKey: errorText])
+        }
+
+        guard approved else {
+            throw NSError(
+                domain: "Remote",
+                code: 8,
+                userInfo: [NSLocalizedDescriptionKey: "Approval timed out. Accept the request on Mac and try again."]
+            )
         }
     }
 
@@ -386,6 +440,72 @@ final class IOSRealRemoteViewModel: ObservableObject {
         shellCommand = ""
     }
 
+    func syncNow() {
+        guard connectedDevice != nil else {
+            status = "Not connected"
+            return
+        }
+        Task { await autoSyncFromMac() }
+    }
+
+    private func autoSyncFromMac() async {
+        let files = [
+            "agents.json",
+            "conversations.json",
+            "automations.json",
+            "sync_settings.json",
+            "sync_api_keys.json"
+        ]
+
+        status = "Syncing..."
+        for file in files {
+            do {
+                let response = try await client.send("get_sync_data", parameters: ["file": file], timeout: 20)
+                guard response.success,
+                      let b64 = response.imageData,
+                      let data = Data(base64Encoded: b64) else {
+                    continue
+                }
+
+                switch file {
+                case "sync_settings.json":
+                    applySettingsFromJSON(data)
+                case "sync_api_keys.json":
+                    applyAPIKeysFromJSON(data)
+                default:
+                    try data.write(to: localBaseURL().appendingPathComponent(file), options: .atomic)
+                }
+            } catch {
+                status = "Sync error: \(error.localizedDescription)"
+            }
+        }
+
+        NotificationCenter.default.post(name: Notification.Name("lumi.dataRemoteUpdated"), object: nil)
+        status = "Sync complete"
+    }
+
+    private func localBaseURL() -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = appSupport.appendingPathComponent("LumiAgent", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func applySettingsFromJSON(_ data: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        for (k, v) in obj {
+            UserDefaults.standard.set(v, forKey: k)
+        }
+    }
+
+    private func applyAPIKeysFromJSON(_ data: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return }
+        for (k, v) in obj {
+            UserDefaults.standard.set(v, forKey: k)
+        }
+    }
+
     private func run(_ type: String, parameters: [String: String] = [:], timeout: TimeInterval = 15) {
         guard connectedDevice != nil else {
             status = "Not connected"
@@ -410,13 +530,12 @@ struct IOSRealRemoteControlView: View {
     var body: some View {
         List {
             if vm.connectedDevice == nil {
-                Section {
-                    TextField("Pair code from Mac (6 digits)", text: $vm.pairCode)
+                Section("Direct Connect (Cable/Port)") {
+                    TextField("Host or IP (e.g. 192.168.2.10)", text: $vm.directHost)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
-                } header: {
-                    Text("Pairing")
+                    Button("Connect Direct") { vm.connectDirect() }
+                        .disabled(vm.directHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || vm.isBusy)
                 }
 
                 Section {
@@ -460,6 +579,7 @@ struct IOSRealRemoteControlView: View {
 
                 Section("Quick Actions") {
                     Button("Ping") { vm.ping() }
+                    Button("Sync Now") { vm.syncNow() }
                     Button("Take Screenshot") { vm.screenshot() }
                     HStack {
                         Button("Volume 25%") { vm.setVolume(25) }

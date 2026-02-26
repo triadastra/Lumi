@@ -100,6 +100,18 @@ final class AppState: ObservableObject {
         loadAgents()
         loadConversations()
         loadAutomations()
+
+        NotificationCenter.default.addObserver(
+            forName: Notification.Name("lumi.dataRemoteUpdated"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.loadAgents()
+                self?.loadConversations()
+                self?.loadAutomations()
+            }
+        }
         
         #if os(macOS)
         DispatchQueue.main.async { [weak self] in
@@ -131,17 +143,6 @@ final class AppState: ObservableObject {
                 }
             }
 
-            NotificationCenter.default.addObserver(
-                forName: Notification.Name("lumi.dataRemoteUpdated"),
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.loadAgents()
-                    self?.loadConversations()
-                    self?.loadAutomations()
-                }
-            }
         }
         #endif
     }

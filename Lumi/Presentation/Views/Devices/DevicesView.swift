@@ -96,79 +96,104 @@ struct DevicesDetailView: View {
     @EnvironmentObject var appState: AppState
     
     var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "iphone.and.arrow.forward")
-                .font(.system(size: 64))
-                .foregroundStyle(.blue.gradient)
-                .shadow(color: .blue.opacity(0.2), radius: 10, x: 0, y: 5)
-            
-            VStack(spacing: 8) {
-                Text("Device Connectivity")
-                    .font(.title2.bold())
-                Text("Pair your iPhone to control this Mac remotely and sync your AI Agents.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
-            }
-            
-            VStack(alignment: .leading, spacing: 16) {
-                FeatureRow(icon: "wifi", title: "Same Wi-Fi", detail: "Ensure both devices are on the same local network.")
-                FeatureRow(icon: "lock.shield", title: "Secure Sync", detail: "Encrypted peer-to-peer data transfer for your agents.")
-                FeatureRow(icon: "bolt.fill", title: "Remote Control", detail: "Control volume, brightness, and run scripts from your phone.")
-            }
-            .padding(24)
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .padding(.horizontal, 40)
-
-            VStack(spacing: 10) {
-                Text("Pairing Code")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(appState.remoteServer.pairingCode)
-                    .font(.system(size: 30, weight: .bold, design: .monospaced))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(.thinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                HStack(spacing: 12) {
-                    Button("Regenerate") {
-                        appState.remoteServer.regeneratePairingCode()
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button("Reset Paired Devices", role: .destructive) {
-                        appState.remoteServer.clearPairedDevices()
-                    }
-                    .buttonStyle(.bordered)
+        ScrollView {
+            VStack(spacing: 20) {
+                Image(systemName: "iphone.and.arrow.forward")
+                    .font(.system(size: 56))
+                    .foregroundStyle(.blue.gradient)
+                    .shadow(color: .blue.opacity(0.2), radius: 10, x: 0, y: 5)
+                
+                VStack(spacing: 8) {
+                    Text("Device Connectivity")
+                        .font(.title2.bold())
+                    Text("Pair your iPhone to control this Mac remotely and sync your AI Agents.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-            }
-            
-            if appState.remoteServer.connectedClients.isEmpty {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Waiting for connection...")
+                .frame(maxWidth: 560)
+                
+                VStack(alignment: .leading, spacing: 14) {
+                    FeatureRow(icon: "wifi", title: "Same Wi-Fi", detail: "Ensure both devices are on the same local network.")
+                    FeatureRow(icon: "cable.connector", title: "Cable/Port Link", detail: "USB-C/Thunderbolt/Ethernet direct links are supported via direct host connect.")
+                    FeatureRow(icon: "lock.shield", title: "Secure Sync", detail: "Encrypted peer-to-peer data transfer for your agents.")
+                    FeatureRow(icon: "bolt.fill", title: "Remote Control", detail: "Control volume, brightness, and run scripts from your phone.")
+                }
+                .frame(maxWidth: 560, alignment: .leading)
+                .padding(20)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+    
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Direct Connect Addresses")
+                        .font(.headline)
+                    ForEach(appState.remoteServer.connectionHints(), id: \.self) { hint in
+                        Text(hint)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Use one of these in iOS Remote → Direct Connect when discovery does not appear over cable.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.top, 20)
-            } else {
-                VStack(spacing: 12) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .font(.title)
-                    Text("\(appState.remoteServer.connectedClients.count) device(s) linked")
-                        .font(.headline)
+                .frame(maxWidth: 560, alignment: .leading)
+                .padding(16)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+    
+                if !appState.remoteServer.pendingApprovals.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Connection Requests")
+                            .font(.headline)
+    
+                        ForEach(appState.remoteServer.pendingApprovals) { req in
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(req.name).font(.subheadline.bold())
+                                    Text(req.address).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("Reject", role: .destructive) {
+                                    appState.remoteServer.rejectConnection(req.id)
+                                }
+                                .buttonStyle(.bordered)
+                                Button("Accept") {
+                                    appState.remoteServer.approveConnection(req.id)
+                                }
+                                .buttonStyle(.borderedProminent)
+                            }
+                            .padding(12)
+                            .background(.ultraThinMaterial)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+                    .frame(maxWidth: 560, alignment: .leading)
                 }
-                .padding(.top, 20)
+                
+                if appState.remoteServer.connectedClients.isEmpty {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Waiting for connection...")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 4)
+                } else {
+                    VStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.title)
+                        Text("\(appState.remoteServer.connectedClients.count) device(s) linked")
+                            .font(.headline)
+                    }
+                    .padding(.top, 4)
+                }
             }
-            
-            Spacer()
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 20)
         }
-        .padding(.top, 60)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
