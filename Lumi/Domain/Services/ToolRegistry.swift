@@ -82,7 +82,7 @@ final class ToolRegistry {
 
         register(RegisteredTool(
             name: "read_file",
-            description: "Read the contents of a file at the given path",
+            description: "Read any file at the given path. Handles text files (code, config, logs, etc.), documents (PDF, Word, Excel, PowerPoint, Pages, Numbers, Keynote), images (returns metadata), and binary files. Automatically detects the format and extracts content appropriately.",
             category: .fileOperations,
             riskLevel: .low,
             parameters: AIToolParameters(
@@ -1300,6 +1300,657 @@ final class ToolRegistry {
             }
         ))
 
+        // MARK: Document Reading
+
+        register(RegisteredTool(
+            name: "read_pdf",
+            description: "Extract text from a PDF file using native PDFKit. Returns page-by-page text content. Reports when a PDF is scanned/image-based with no extractable text.",
+            category: .documents,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the PDF file")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await DocumentTools.readPDF(path: args["path"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "read_word",
+            description: "Extract text from Word documents (.doc, .docx), RTF (.rtf), and OpenDocument (.odt) files using macOS textutil. No external dependencies needed.",
+            category: .documents,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the .doc, .docx, .rtf, or .odt file")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await DocumentTools.readWord(path: args["path"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "read_ppt",
+            description: "Extract text from PowerPoint presentations. Supports .pptx (parses internal XML for slide-by-slide text) and .ppt (legacy format via textutil, best-effort).",
+            category: .documents,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the .pptx or .ppt file")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await DocumentTools.readPPT(path: args["path"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "read_excel",
+            description: "Extract data from Excel spreadsheets (.xlsx, .xls) and CSV files. Returns cell contents as tab-separated text with sheet names. Uses Python openpyxl for .xlsx and xlrd/csv for legacy formats.",
+            category: .documents,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the .xlsx, .xls, or .csv file")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await DocumentTools.readExcel(path: args["path"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "read_document",
+            description: "Smart document reader — auto-detects format by file extension and extracts text. Handles: PDF, Word (.doc/.docx/.rtf/.odt), Excel (.xlsx/.xls/.csv), PowerPoint (.pptx/.ppt), Apple iWork (.pages/.numbers/.key), images (metadata + description), plain text, code files, and many others via textutil. For unreadable binary formats, returns file metadata (size, type) and suggests alternatives. Use this when you don't know the file type.",
+            category: .documents,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the document file")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await DocumentTools.readDocument(path: args["path"] ?? "") }
+        ))
+
+        // MARK: Disk Analysis
+
+        register(RegisteredTool(
+            name: "analyze_disk_space",
+            description: "Analyze disk space usage. Shows overall volume usage (all mounted drives) and the largest items in a given directory. Defaults to the user's home directory if no path is given. Great for finding what's using disk space.",
+            category: .diskAnalysis,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Directory path to analyze (optional, defaults to ~)")
+                ],
+                required: []
+            ),
+            handler: { args in try await DiskTools.analyzeDiskSpace(path: args["path"]) }
+        ))
+
+        // MARK: Window Management
+
+        register(RegisteredTool(
+            name: "list_windows",
+            description: "List all visible windows across all apps, showing app name, window title, position, and size.",
+            category: .windowManagement,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await WindowTools.listWindows() }
+        ))
+
+        register(RegisteredTool(
+            name: "focus_window",
+            description: "Bring a specific window to the front by app name. Optionally match a window title.",
+            category: .windowManagement,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "app": AIToolProperty(type: "string", description: "Application name, e.g. \"Safari\""),
+                    "title": AIToolProperty(type: "string", description: "Partial window title to match (optional)")
+                ],
+                required: ["app"]
+            ),
+            handler: { args in
+                try await WindowTools.focusWindow(app: args["app"] ?? "", title: args["title"])
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "resize_window",
+            description: "Move and/or resize the frontmost window of an app. Provide position (x, y) and/or size (width, height).",
+            category: .windowManagement,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "app": AIToolProperty(type: "string", description: "Application name"),
+                    "x": AIToolProperty(type: "string", description: "Window X position from left edge (optional)"),
+                    "y": AIToolProperty(type: "string", description: "Window Y position from top edge (optional)"),
+                    "width": AIToolProperty(type: "string", description: "Window width in pixels (optional)"),
+                    "height": AIToolProperty(type: "string", description: "Window height in pixels (optional)")
+                ],
+                required: ["app"]
+            ),
+            handler: { args in
+                try await WindowTools.resizeWindow(
+                    app: args["app"] ?? "",
+                    x: args["x"].flatMap { Int($0) },
+                    y: args["y"].flatMap { Int($0) },
+                    width: args["width"].flatMap { Int($0) },
+                    height: args["height"].flatMap { Int($0) }
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "close_window",
+            description: "Close the frontmost window of an application.",
+            category: .windowManagement,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "app": AIToolProperty(type: "string", description: "Application name")
+                ],
+                required: ["app"]
+            ),
+            handler: { args in try await WindowTools.closeWindow(app: args["app"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "quit_application",
+            description: "Quit an application gracefully.",
+            category: .windowManagement,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "name": AIToolProperty(type: "string", description: "Application name to quit")
+                ],
+                required: ["name"]
+            ),
+            handler: { args in try await WindowTools.quitApplication(name: args["name"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "list_running_apps",
+            description: "List all currently running GUI applications (not background processes). More user-friendly than list_processes.",
+            category: .windowManagement,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await WindowTools.listRunningApps() }
+        ))
+
+        register(RegisteredTool(
+            name: "get_frontmost_app",
+            description: "Get the name of the currently frontmost (active) application.",
+            category: .windowManagement,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await WindowTools.getFrontmostApp() }
+        ))
+
+        // MARK: Notifications
+
+        register(RegisteredTool(
+            name: "send_notification",
+            description: "Send a macOS notification banner with a title and message. Appears in Notification Center.",
+            category: .notifications,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "title": AIToolProperty(type: "string", description: "Notification title"),
+                    "subtitle": AIToolProperty(type: "string", description: "Notification subtitle (optional)"),
+                    "message": AIToolProperty(type: "string", description: "Notification body text")
+                ],
+                required: ["title", "message"]
+            ),
+            handler: { args in
+                try await NotificationTools.sendNotification(
+                    title: args["title"] ?? "",
+                    subtitle: args["subtitle"],
+                    message: args["message"] ?? ""
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "set_timer",
+            description: "Set a timer that shows a macOS notification after a given number of seconds (max 3600). Runs in the background.",
+            category: .notifications,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "seconds": AIToolProperty(type: "string", description: "Number of seconds to wait (1–3600)"),
+                    "message": AIToolProperty(type: "string", description: "Message to show when the timer fires")
+                ],
+                required: ["seconds", "message"]
+            ),
+            handler: { args in
+                try await NotificationTools.setTimer(
+                    seconds: Int(args["seconds"] ?? "60") ?? 60,
+                    message: args["message"] ?? "Timer done!"
+                )
+            }
+        ))
+
+        // MARK: Image Tools
+
+        register(RegisteredTool(
+            name: "get_image_info",
+            description: "Get detailed image metadata: dimensions (width × height), format, color space, DPI, and file size. Uses native macOS sips.",
+            category: .imageTools,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the image file")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await ImageTools.getImageInfo(path: args["path"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "resize_image",
+            description: "Resize an image to specified width and/or height in pixels using macOS sips. Optionally save to a new path.",
+            category: .imageTools,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the image file"),
+                    "width": AIToolProperty(type: "string", description: "New width in pixels (optional if height given)"),
+                    "height": AIToolProperty(type: "string", description: "New height in pixels (optional if width given)"),
+                    "output_path": AIToolProperty(type: "string", description: "Save resized image here instead of overwriting original (optional)")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in
+                try await ImageTools.resizeImage(
+                    path: args["path"] ?? "",
+                    width: args["width"].flatMap { Int($0) },
+                    height: args["height"].flatMap { Int($0) },
+                    outputPath: args["output_path"]
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "convert_image",
+            description: "Convert an image to a different format: png, jpeg, tiff, bmp, gif, or pdf. Uses native macOS sips (no dependencies).",
+            category: .imageTools,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the source image"),
+                    "format": AIToolProperty(type: "string", description: "Target format", enumValues: ["png", "jpeg", "tiff", "bmp", "gif", "pdf"]),
+                    "output_path": AIToolProperty(type: "string", description: "Output file path (optional; defaults to same name with new extension)")
+                ],
+                required: ["path", "format"]
+            ),
+            handler: { args in
+                try await ImageTools.convertImage(
+                    path: args["path"] ?? "",
+                    format: args["format"] ?? "png",
+                    outputPath: args["output_path"]
+                )
+            }
+        ))
+
+        // MARK: Archive Tools
+
+        register(RegisteredTool(
+            name: "create_archive",
+            description: "Create a ZIP archive from one or more files or directories.",
+            category: .archives,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "sources": AIToolProperty(type: "string", description: "Comma-separated list of file/directory paths to include"),
+                    "output_path": AIToolProperty(type: "string", description: "Path for the output .zip file")
+                ],
+                required: ["sources", "output_path"]
+            ),
+            handler: { args in
+                let sources = (args["sources"] ?? "").components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                return try await ArchiveTools.createArchive(sources: sources, outputPath: args["output_path"] ?? "")
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "extract_archive",
+            description: "Extract a compressed archive: .zip, .tar, .tar.gz, .tgz, .tar.bz2, .tar.xz. Auto-detects format.",
+            category: .archives,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Path to the archive file"),
+                    "destination": AIToolProperty(type: "string", description: "Directory to extract into (optional; defaults to same directory as archive)")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in
+                try await ArchiveTools.extractArchive(path: args["path"] ?? "", destination: args["destination"])
+            }
+        ))
+
+        // MARK: Network Info
+
+        register(RegisteredTool(
+            name: "get_wifi_info",
+            description: "Get current Wi-Fi connection details: SSID, signal strength (RSSI), channel, security type, and transmit rate.",
+            category: .networkInfo,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await NetworkInfoTools.getWifiInfo() }
+        ))
+
+        register(RegisteredTool(
+            name: "get_network_interfaces",
+            description: "List all network interfaces with IP addresses, external/public IP, and DNS servers.",
+            category: .networkInfo,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await NetworkInfoTools.getNetworkInterfaces() }
+        ))
+
+        register(RegisteredTool(
+            name: "ping_host",
+            description: "Ping a hostname or IP address to check reachability and measure latency.",
+            category: .networkInfo,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "host": AIToolProperty(type: "string", description: "Hostname or IP address to ping, e.g. \"google.com\" or \"8.8.8.8\""),
+                    "count": AIToolProperty(type: "string", description: "Number of pings (1–10, default 4)")
+                ],
+                required: ["host"]
+            ),
+            handler: { args in
+                try await NetworkInfoTools.pingHost(host: args["host"] ?? "", count: Int(args["count"] ?? "4") ?? 4)
+            }
+        ))
+
+        // MARK: Appearance
+
+        register(RegisteredTool(
+            name: "get_brightness",
+            description: "Get the current screen brightness level.",
+            category: .appearance,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await AppearanceTools.getBrightness() }
+        ))
+
+        register(RegisteredTool(
+            name: "set_brightness",
+            description: "Set the screen brightness. Level is 0.0 (darkest) to 1.0 (brightest). May require the 'brightness' CLI tool (brew install brightness).",
+            category: .appearance,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "level": AIToolProperty(type: "string", description: "Brightness level 0.0–1.0")
+                ],
+                required: ["level"]
+            ),
+            handler: { args in
+                try await AppearanceTools.setBrightness(level: Double(args["level"] ?? "0.5") ?? 0.5)
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "get_appearance",
+            description: "Check whether Dark Mode or Light Mode is currently active.",
+            category: .appearance,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await AppearanceTools.getAppearance() }
+        ))
+
+        register(RegisteredTool(
+            name: "set_dark_mode",
+            description: "Enable or disable Dark Mode (switches system-wide appearance).",
+            category: .appearance,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "enabled": AIToolProperty(type: "string", description: "true for Dark Mode, false for Light Mode", enumValues: ["true", "false"])
+                ],
+                required: ["enabled"]
+            ),
+            handler: { args in
+                try await AppearanceTools.setDarkMode(enabled: args["enabled"]?.lowercased() == "true")
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "set_wallpaper",
+            description: "Set the desktop wallpaper to an image file.",
+            category: .appearance,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the image file to use as wallpaper")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await AppearanceTools.setWallpaper(path: args["path"] ?? "") }
+        ))
+
+        // MARK: Trash
+
+        register(RegisteredTool(
+            name: "move_to_trash",
+            description: "Move a file or directory to the Trash. Safer than delete_file — items can be recovered from Trash.",
+            category: .fileOperations,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the file or directory")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await TrashTools.moveToTrash(path: args["path"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "empty_trash",
+            description: "Permanently empty the Trash. This cannot be undone.",
+            category: .fileOperations,
+            riskLevel: .high,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await TrashTools.emptyTrash() }
+        ))
+
+        // MARK: Speech
+
+        register(RegisteredTool(
+            name: "speak_text",
+            description: "Read text aloud using macOS text-to-speech (the 'say' command). Runs in the background.",
+            category: .speech,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "text": AIToolProperty(type: "string", description: "Text to speak aloud"),
+                    "voice": AIToolProperty(type: "string", description: "Voice name (optional, e.g. \"Samantha\", \"Alex\"). Use list_voices to see options.")
+                ],
+                required: ["text"]
+            ),
+            handler: { args in
+                try await SpeechTools.speakText(text: args["text"] ?? "", voice: args["voice"])
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "list_voices",
+            description: "List all available text-to-speech voices on this Mac with their language/locale.",
+            category: .speech,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await SpeechTools.listVoices() }
+        ))
+
+        // MARK: Calendar & Reminders
+
+        register(RegisteredTool(
+            name: "get_calendar_events",
+            description: "Get upcoming calendar events for the next N days from all calendars.",
+            category: .calendar,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "days": AIToolProperty(type: "string", description: "Number of days to look ahead (1–30, default 7)")
+                ],
+                required: []
+            ),
+            handler: { args in
+                try await CalendarTools.getEvents(days: Int(args["days"] ?? "7") ?? 7)
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "create_calendar_event",
+            description: "Create a new event in the Calendar app. Dates should be in natural format like \"February 28, 2026 at 2:00 PM\".",
+            category: .calendar,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "title": AIToolProperty(type: "string", description: "Event title"),
+                    "start_date": AIToolProperty(type: "string", description: "Start date and time, e.g. \"March 1, 2026 at 10:00 AM\""),
+                    "end_date": AIToolProperty(type: "string", description: "End date and time"),
+                    "calendar": AIToolProperty(type: "string", description: "Calendar name (optional; uses first available)"),
+                    "notes": AIToolProperty(type: "string", description: "Event notes/description (optional)")
+                ],
+                required: ["title", "start_date", "end_date"]
+            ),
+            handler: { args in
+                try await CalendarTools.createEvent(
+                    title: args["title"] ?? "",
+                    startDate: args["start_date"] ?? "",
+                    endDate: args["end_date"] ?? "",
+                    calendar: args["calendar"],
+                    notes: args["notes"]
+                )
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "get_reminders",
+            description: "Get all incomplete reminders from the default Reminders list.",
+            category: .calendar,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "list": AIToolProperty(type: "string", description: "Reminders list name (optional; uses default list)")
+                ],
+                required: []
+            ),
+            handler: { args in try await ReminderTools.getReminders(list: args["list"]) }
+        ))
+
+        register(RegisteredTool(
+            name: "create_reminder",
+            description: "Create a new reminder in the Reminders app.",
+            category: .calendar,
+            riskLevel: .medium,
+            parameters: AIToolParameters(
+                properties: [
+                    "title": AIToolProperty(type: "string", description: "Reminder title"),
+                    "due_date": AIToolProperty(type: "string", description: "Due date, e.g. \"March 1, 2026 at 3:00 PM\" (optional)"),
+                    "notes": AIToolProperty(type: "string", description: "Additional notes (optional)"),
+                    "list": AIToolProperty(type: "string", description: "Reminders list name (optional; uses default)")
+                ],
+                required: ["title"]
+            ),
+            handler: { args in
+                try await ReminderTools.createReminder(
+                    title: args["title"] ?? "",
+                    dueDate: args["due_date"],
+                    notes: args["notes"],
+                    list: args["list"]
+                )
+            }
+        ))
+
+        // MARK: Utilities
+
+        register(RegisteredTool(
+            name: "hash_file",
+            description: "Compute a checksum/hash of a file. Supports MD5, SHA-1, SHA-256, and SHA-512.",
+            category: .utilities,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the file"),
+                    "algorithm": AIToolProperty(type: "string", description: "Hash algorithm", enumValues: ["md5", "sha1", "sha256", "sha512"])
+                ],
+                required: ["path"]
+            ),
+            handler: { args in
+                try await UtilityTools.hashFile(path: args["path"] ?? "", algorithm: args["algorithm"] ?? "sha256")
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "spotlight_search",
+            description: "Search for files using macOS Spotlight (mdfind). Fast indexed search across the entire system by file name.",
+            category: .utilities,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "query": AIToolProperty(type: "string", description: "Search query (file name or partial name)"),
+                    "directory": AIToolProperty(type: "string", description: "Restrict search to this directory (optional)")
+                ],
+                required: ["query"]
+            ),
+            handler: { args in
+                try await UtilityTools.spotlightSearch(query: args["query"] ?? "", directory: args["directory"])
+            }
+        ))
+
+        register(RegisteredTool(
+            name: "preview_file",
+            description: "Open a file in macOS Quick Look for visual preview. Works with images, PDFs, documents, videos, and more.",
+            category: .utilities,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "path": AIToolProperty(type: "string", description: "Absolute path to the file to preview")
+                ],
+                required: ["path"]
+            ),
+            handler: { args in try await UtilityTools.previewFile(path: args["path"] ?? "") }
+        ))
+
+        register(RegisteredTool(
+            name: "get_battery_info",
+            description: "Get battery status: charge level, charging state, time remaining, and power source. Returns power adapter info on desktop Macs.",
+            category: .utilities,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await UtilityTools.getBatteryInfo() }
+        ))
+
+        register(RegisteredTool(
+            name: "get_user_info",
+            description: "Get the current macOS user's username, full name, home directory, and default shell.",
+            category: .utilities,
+            riskLevel: .low,
+            parameters: AIToolParameters(properties: [:], required: []),
+            handler: { _ in try await UtilityTools.getUserInfo() }
+        ))
+
+        register(RegisteredTool(
+            name: "list_menu_items",
+            description: "List all menu bar items and their sub-items for an app. Useful for discovering available actions for automation via AppleScript.",
+            category: .utilities,
+            riskLevel: .low,
+            parameters: AIToolParameters(
+                properties: [
+                    "app": AIToolProperty(type: "string", description: "Application name (optional; uses frontmost app if omitted)")
+                ],
+                required: []
+            ),
+            handler: { args in try await UtilityTools.listMenuItems(app: args["app"]) }
+        ))
+
         // MARK: Self-Modification
         // Intercepted by AppState.streamResponse — handler here is a placeholder only.
 
@@ -1373,40 +2024,73 @@ enum ToolCategory: String, CaseIterable {
     case screenControl
     case bluetooth
     case media
+    case documents
+    case diskAnalysis
+    case windowManagement
+    case notifications
+    case imageTools
+    case archives
+    case networkInfo
+    case appearance
+    case speech
+    case calendar
+    case utilities
 
     var displayName: String {
         switch self {
-        case .fileOperations:   return "File Operations"
-        case .systemCommands:   return "System Commands"
-        case .webSearch:        return "Web Search"
-        case .codeExecution:    return "Code Execution"
-        case .databaseAccess:   return "Database Access"
-        case .networkRequests:  return "Network Requests"
-        case .git:              return "Git"
-        case .textData:         return "Text & Data"
-        case .clipboard:        return "Clipboard"
-        case .screenshot:       return "Screenshot"
-        case .screenControl:    return "Screen Control"
-        case .bluetooth:        return "Bluetooth"
-        case .media:            return "Media & Volume"
+        case .fileOperations:    return "File Operations"
+        case .systemCommands:    return "System Commands"
+        case .webSearch:         return "Web Search"
+        case .codeExecution:     return "Code Execution"
+        case .databaseAccess:    return "Database Access"
+        case .networkRequests:   return "Network Requests"
+        case .git:               return "Git"
+        case .textData:          return "Text & Data"
+        case .clipboard:         return "Clipboard"
+        case .screenshot:        return "Screenshot"
+        case .screenControl:     return "Screen Control"
+        case .bluetooth:         return "Bluetooth"
+        case .media:             return "Media & Volume"
+        case .documents:         return "Document Reading"
+        case .diskAnalysis:      return "Disk Analysis"
+        case .windowManagement:  return "Window Management"
+        case .notifications:     return "Notifications"
+        case .imageTools:        return "Image Tools"
+        case .archives:          return "Archives"
+        case .networkInfo:       return "Network Info"
+        case .appearance:        return "Appearance"
+        case .speech:            return "Speech"
+        case .calendar:          return "Calendar & Reminders"
+        case .utilities:         return "Utilities"
         }
     }
 
     var icon: String {
         switch self {
-        case .fileOperations:   return "doc.fill"
-        case .systemCommands:   return "terminal.fill"
-        case .webSearch:        return "magnifyingglass"
-        case .codeExecution:    return "chevron.left.forwardslash.chevron.right"
-        case .databaseAccess:   return "cylinder.fill"
-        case .networkRequests:  return "network"
-        case .git:              return "arrow.triangle.branch"
-        case .textData:         return "text.alignleft"
-        case .clipboard:        return "clipboard.fill"
-        case .screenshot:       return "camera.fill"
-        case .screenControl:    return "cursorarrow.motionlines"
-        case .bluetooth:        return "antenna.radiowaves.left.and.right"
-        case .media:            return "music.note"
+        case .fileOperations:    return "doc.fill"
+        case .systemCommands:    return "terminal.fill"
+        case .webSearch:         return "magnifyingglass"
+        case .codeExecution:     return "chevron.left.forwardslash.chevron.right"
+        case .databaseAccess:    return "cylinder.fill"
+        case .networkRequests:   return "network"
+        case .git:               return "arrow.triangle.branch"
+        case .textData:          return "text.alignleft"
+        case .clipboard:         return "clipboard.fill"
+        case .screenshot:        return "camera.fill"
+        case .screenControl:     return "cursorarrow.motionlines"
+        case .bluetooth:         return "antenna.radiowaves.left.and.right"
+        case .media:             return "music.note"
+        case .documents:         return "doc.richtext"
+        case .diskAnalysis:      return "internaldrive"
+        case .windowManagement:  return "macwindow.on.rectangle"
+        case .notifications:     return "bell.fill"
+        case .imageTools:        return "photo.fill"
+        case .archives:          return "archivebox.fill"
+        case .networkInfo:       return "wifi"
+        case .appearance:        return "paintbrush.fill"
+        case .speech:            return "speaker.wave.3.fill"
+        case .calendar:          return "calendar"
+        case .utilities:         return "wrench.fill"
         }
     }
 }
@@ -1424,7 +2108,16 @@ enum FileOperationHandler {
         guard FileManager.default.fileExists(atPath: path) else {
             throw ToolError.fileNotFound(path)
         }
-        return try String(contentsOf: url, encoding: .utf8)
+        // Try UTF-8 first for plain text files
+        if let text = try? String(contentsOf: url, encoding: .utf8) {
+            // Heuristic: if the string has too many replacement characters, it's likely binary
+            let nullCount = text.prefix(1024).filter({ $0 == "\0" }).count
+            if nullCount == 0 {
+                return text
+            }
+        }
+        // Non-UTF-8 or binary file — delegate to the smart document reader
+        return try await DocumentTools.readDocument(path: path)
     }
 
     static func writeFile(path: String, content: String) async throws -> String {

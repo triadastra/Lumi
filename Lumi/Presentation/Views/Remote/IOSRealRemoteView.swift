@@ -88,15 +88,16 @@ final class IOSBonjourDiscovery: ObservableObject {
 
         let browser = NWBrowser(for: descriptor, using: params)
         browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
+            Task { @MainActor [weak self, state] in
+                guard let self else { return }
                 switch state {
                 case .ready:
-                    self?.error = nil
+                    self.error = nil
                 case .failed(let err):
-                    self?.error = err.localizedDescription
-                    self?.isBrowsing = false
+                    self.error = err.localizedDescription
+                    self.isBrowsing = false
                 case .cancelled:
-                    self?.isBrowsing = false
+                    self.isBrowsing = false
                 default:
                     break
                 }
@@ -104,7 +105,7 @@ final class IOSBonjourDiscovery: ObservableObject {
         }
 
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self, results] in
                 guard let self else { return }
                 var mapped: [IOSRemoteDevice] = []
                 for result in results {
@@ -146,6 +147,7 @@ final class IOSMacRemoteClient: ObservableObject {
     private let queue = DispatchQueue(label: "com.lumi.ios.remote-client", qos: .userInitiated)
     private var pending: [UUID: CheckedContinuation<IOSRemoteResponse, Error>] = [:]
     private var receiveBuffer = Data()
+    private var connectionContinuation: CheckedContinuation<Void, Error>?
 
     func connect(to endpoint: NWEndpoint) async throws {
         if isConnected { return }
@@ -156,59 +158,64 @@ final class IOSMacRemoteClient: ObservableObject {
         self.connection = conn
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            var finished = false
-            func finish(_ result: Result<Void, Error>) {
-                guard !finished else { return }
-                finished = true
-                switch result {
-                case .success:
-                    continuation.resume()
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
+            self.connectionContinuation = continuation
 
             conn.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor in
-                    switch state {
-                    case .ready:
-                        self?.isConnected = true
-                        finish(.success(()))
-                        self?.receiveLoop()
-                    case .waiting(let err):
-                        self?.isConnected = false
-                        finish(.failure(err))
-                        self?.cancelPending(with: err)
-                    case .failed(let err):
-                        self?.isConnected = false
-                        finish(.failure(err))
-                        self?.cancelPending(with: err)
-                    case .cancelled:
-                        self?.isConnected = false
-                        finish(.failure(CancellationError()))
-                    default:
-                        break
-                    }
+                Task { @MainActor [weak self, state] in
+                    self?.handleStateUpdate(state)
                 }
             }
             conn.start(queue: queue)
 
-            Task {
+            Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
-                await MainActor.run {
-                    guard !finished else { return }
-                    let timeout = NSError(
-                        domain: "Remote",
-                        code: 4,
-                        userInfo: [NSLocalizedDescriptionKey: "Connection timed out. Check Wi-Fi and Mac pairing screen."]
-                    )
-                    self.connection?.cancel()
-                    self.connection = nil
-                    self.isConnected = false
-                    finish(.failure(timeout))
+                await MainActor.run { [weak self] in
+                    self?.handleTimeout()
                 }
             }
         }
+    }
+
+    private func handleStateUpdate(_ state: NWConnection.State) {
+        switch state {
+        case .ready:
+            isConnected = true
+            connectionContinuation?.resume()
+            connectionContinuation = nil
+            receiveLoop()
+        case .waiting(let err):
+            if connectionContinuation != nil {
+                isConnected = false
+                connectionContinuation?.resume(throwing: err)
+                connectionContinuation = nil
+                cancelPending(with: err)
+            }
+        case .failed(let err):
+            isConnected = false
+            connectionContinuation?.resume(throwing: err)
+            connectionContinuation = nil
+            cancelPending(with: err)
+        case .cancelled:
+            isConnected = false
+            connectionContinuation?.resume(throwing: CancellationError())
+            connectionContinuation = nil
+        default:
+            break
+        }
+    }
+
+    private func handleTimeout() {
+        guard let continuation = connectionContinuation else { return }
+        let timeout = NSError(
+            domain: "Remote",
+            code: 4,
+            userInfo: [NSLocalizedDescriptionKey: "Connection timed out. Check Wi-Fi and Mac pairing screen."]
+        )
+        connection?.cancel()
+        connection = nil
+        isConnected = false
+        continuation.resume(throwing: timeout)
+        connectionContinuation = nil
     }
 
     func connect(host: String, port: UInt16 = 47285) async throws {
@@ -238,7 +245,7 @@ final class IOSMacRemoteClient: ObservableObject {
             pending[cmd.id] = continuation
             connection.send(content: frame, completion: .contentProcessed { [weak self] err in
                 if let err {
-                    Task { @MainActor in
+                    Task { @MainActor [weak self, err] in
                         self?.pending.removeValue(forKey: cmd.id)?.resume(throwing: err)
                     }
                 }
@@ -246,7 +253,7 @@ final class IOSMacRemoteClient: ObservableObject {
 
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     self?.pending.removeValue(forKey: cmd.id)?.resume(throwing: NSError(domain: "Remote", code: 2, userInfo: [NSLocalizedDescriptionKey: "Command timed out"]))
                 }
             }
@@ -255,7 +262,7 @@ final class IOSMacRemoteClient: ObservableObject {
 
     private func receiveLoop() {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, complete, err in
-            Task { @MainActor in
+            Task { @MainActor [weak self, data, complete, err] in
                 guard let self else { return }
                 if let data {
                     self.receiveBuffer.append(data)
@@ -309,7 +316,8 @@ final class IOSMacRemoteClient: ObservableObject {
             let total = 4 + payloadLength
             guard receiveBuffer.count >= total else { break }
 
-            let payload = Data(receiveBuffer[4..<total])
+            let start = receiveBuffer.startIndex
+            let payload = Data(receiveBuffer[start + 4 ..< start + total])
             receiveBuffer.removeFirst(total)
 
             if let response = try? IOSWireFrame.decode(IOSRemoteResponse.self, from: payload) {
@@ -348,6 +356,18 @@ final class IOSRealRemoteViewModel: ObservableObject {
     let discovery = IOSBonjourDiscovery()
     let client = IOSMacRemoteClient()
     private var cancellables = Set<AnyCancellable>()
+    private var continuousSyncTask: Task<Void, Never>?
+    private var localChangeSyncTask: Task<Void, Never>?
+    private var isSyncInFlight = false
+    private var isApprovedSession = false
+    private let syncFiles = [
+        "agents.json",
+        "conversations.json",
+        "automations.json",
+        "sync_settings.json",
+        "sync_api_keys.json",
+        "health_data.json"
+    ]
 
     init() {
         discovery.$devices.receive(on: RunLoop.main).assign(to: &$devices)
@@ -359,6 +379,33 @@ final class IOSRealRemoteViewModel: ObservableObject {
                 if let value = $0 { self?.status = value }
             }
             .store(in: &cancellables)
+
+        client.$isConnected
+            .receive(on: RunLoop.main)
+            .sink { [weak self] connected in
+                guard let self else { return }
+                if !connected, self.isApprovedSession {
+                    self.connectedDevice = nil
+                    self.status = "Disconnected"
+                    self.endRemoteSession()
+                }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: Notification.Name("lumi.localDataChanged"))
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.scheduleLocalChangeSync()
+            }
+            .store(in: &cancellables)
+    }
+
+    deinit {
+        continuousSyncTask?.cancel()
+        localChangeSyncTask?.cancel()
+        Task { @MainActor in
+            AppState.shared?.setRemoteMacBridge(isConnected: false, executor: nil)
+        }
     }
 
     func start() { discovery.start() }
@@ -375,10 +422,12 @@ final class IOSRealRemoteViewModel: ObservableObject {
                 try await awaitApproval()
                 connectedDevice = device
                 status = "Connected to \(device.name)"
-                await autoSyncFromMac()
+                beginRemoteSession()
+                await syncBidirectional(showProgress: true)
             } catch {
                 status = error.localizedDescription
                 client.disconnect()
+                endRemoteSession()
             }
             isBusy = false
         }
@@ -403,10 +452,12 @@ final class IOSRealRemoteViewModel: ObservableObject {
                     state: .connected
                 )
                 status = "Connected to \(host)"
-                await autoSyncFromMac()
+                beginRemoteSession()
+                await syncBidirectional(showProgress: true)
             } catch {
                 status = error.localizedDescription
                 client.disconnect()
+                endRemoteSession()
             }
             isBusy = false
         }
@@ -444,6 +495,7 @@ final class IOSRealRemoteViewModel: ObservableObject {
     }
 
     func disconnect() {
+        endRemoteSession()
         client.disconnect()
         connectedDevice = nil
         status = "Disconnected"
@@ -473,58 +525,235 @@ final class IOSRealRemoteViewModel: ObservableObject {
             status = "Not connected"
             return
         }
-        Task { await autoSyncFromMac() }
+        Task { await syncBidirectional(showProgress: true) }
     }
 
-    private func autoSyncFromMac() async {
-        let files = [
-            "agents.json",
-            "conversations.json",
-            "automations.json",
-            "sync_settings.json",
-            "sync_api_keys.json"
-        ]
+    private func syncBidirectional(showProgress: Bool) async {
+        guard connectedDevice != nil, isApprovedSession else { return }
+        guard !isSyncInFlight else { return }
+        isSyncInFlight = true
+        defer { isSyncInFlight = false }
 
-        isSyncing = true
-        syncProgress = 0
-        syncDetail = "Preparing Wi-Fi sync..."
-        status = "Syncing..."
-        for (index, file) in files.enumerated() {
-            syncDetail = "Syncing \(friendlyFileName(file))..."
+        let totalSteps = Double(syncFiles.count * 2)
+        var completedSteps = 0.0
+        func step(_ detail: String? = nil) {
+            completedSteps += 1
+            if showProgress {
+                if let detail { syncDetail = detail }
+                syncProgress = min(1.0, completedSteps / max(totalSteps, 1))
+            }
+        }
+
+        if showProgress {
+            isSyncing = true
+            syncProgress = 0
+            syncDetail = "Preparing Wi-Fi sync..."
+            status = "Syncing..."
+        }
+
+        // Push local changes from iPhone to Mac first.
+        for file in syncFiles {
             do {
+                if showProgress {
+                    syncDetail = "Uploading \(friendlyFileName(file))..."
+                }
+                
+                guard let localData = localSyncData(for: file) else {
+                    step()
+                    continue
+                }
+
+                // Check if Mac already has newer data for this file
+                if ["agents.json", "conversations.json", "automations.json"].contains(file) {
+                    let response = try await client.send("get_sync_data", parameters: ["file": file], timeout: 20)
+                    if response.success {
+                        let iso = ISO8601DateFormatter()
+                        let localMax = maxTimestamp(in: localData)
+                        var remoteMax: Date = .distantPast
+                        
+                        if let resultStr = response.result.components(separatedBy: "|").first(where: { $0.hasPrefix("updatedAt:") }) {
+                            let ts = resultStr.replacingOccurrences(of: "updatedAt:", with: "")
+                            remoteMax = iso.date(from: ts) ?? .distantPast
+                        }
+                        
+                        if remoteMax > localMax {
+                            print("[Sync] Skipping upload of \(file) - Mac is newer (Mac: \(remoteMax), Local: \(localMax))")
+                            step()
+                            continue
+                        }
+                    }
+                }
+
+                let response = try await client.send(
+                    "push_sync_data",
+                    parameters: ["file": file, "data": localData.base64EncodedString()],
+                    timeout: 25
+                )
+                if !response.success {
+                    // Stale data error from Mac is expected if Mac was updated in parallel
+                    print("[Sync] Upload result for \(file): \(response.result)")
+                }
+            } catch {
+                status = "Sync upload error: \(error.localizedDescription)"
+            }
+            step()
+        }
+
+        // Pull latest data from Mac to iPhone.
+        for file in syncFiles {
+            do {
+                if shouldSkipPull(for: file) {
+                    step()
+                    continue
+                }
+                if showProgress {
+                    syncDetail = "Downloading \(friendlyFileName(file))..."
+                }
                 let response = try await client.send("get_sync_data", parameters: ["file": file], timeout: 20)
                 guard response.success,
                       let b64 = response.imageData,
                       let data = Data(base64Encoded: b64) else {
-                    syncProgress = Double(index + 1) / Double(files.count)
+                    step()
                     continue
                 }
 
-                switch file {
-                case "sync_settings.json":
-                    applySettingsFromJSON(data)
-                case "sync_api_keys.json":
-                    applyAPIKeysFromJSON(data)
-                default:
-                    let targetURL = localBaseURL().appendingPathComponent(file)
-                    try await Task.detached(priority: .utility) {
-                        try data.write(to: targetURL, options: .atomic)
-                    }.value
+                // CONFLICT RESOLUTION: Skip pulling if local is newer
+                if ["agents.json", "conversations.json", "automations.json"].contains(file) {
+                    if let localData = localSyncData(for: file) {
+                        let localMax = maxTimestamp(in: localData)
+                        let remoteMax = maxTimestamp(in: data)
+                        
+                        if localMax > remoteMax {
+                            print("[Sync] Skipping download of \(file) - iPhone is newer (Local: \(localMax), Remote: \(remoteMax))")
+                            step()
+                            continue
+                        }
+                    }
                 }
+
+                try await applyPulledData(data, for: file)
             } catch {
-                status = "Sync error: \(error.localizedDescription)"
+                status = "Sync download error: \(error.localizedDescription)"
             }
-            syncProgress = Double(index + 1) / Double(files.count)
+            step()
         }
 
         NotificationCenter.default.post(name: Notification.Name("lumi.dataRemoteUpdated"), object: nil)
-        status = "Sync complete"
-        syncDetail = "Wi-Fi sync complete"
-        isSyncing = false
-        Task {
-            try? await Task.sleep(nanoseconds: 1_800_000_000)
-            syncDetail = nil
-            syncProgress = 0
+
+        if showProgress {
+            status = "Sync complete"
+            syncDetail = "Wi-Fi sync complete"
+            isSyncing = false
+            Task {
+                try? await Task.sleep(nanoseconds: 1_800_000_000)
+                syncDetail = nil
+                syncProgress = 0
+            }
+        }
+    }
+
+    private func beginRemoteSession() {
+        isApprovedSession = true
+        AppState.shared?.setRemoteMacBridge(
+            isConnected: true,
+            executor: { [weak self] commandType, parameters, timeout in
+                guard let self else {
+                    throw NSError(domain: "Remote", code: 12, userInfo: [NSLocalizedDescriptionKey: "Remote session ended"])
+                }
+                return try await self.client.send(commandType, parameters: parameters, timeout: timeout)
+            }
+        )
+        startContinuousSyncLoop()
+    }
+
+    private func endRemoteSession() {
+        isApprovedSession = false
+        continuousSyncTask?.cancel()
+        continuousSyncTask = nil
+        localChangeSyncTask?.cancel()
+        localChangeSyncTask = nil
+        AppState.shared?.setRemoteMacBridge(isConnected: false, executor: nil)
+    }
+
+    private func startContinuousSyncLoop() {
+        continuousSyncTask?.cancel()
+        continuousSyncTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                guard self.connectedDevice != nil, self.client.isConnected, self.isApprovedSession else { break }
+                await self.syncBidirectional(showProgress: false)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
+    }
+
+    private func scheduleLocalChangeSync() {
+        guard connectedDevice != nil, client.isConnected, isApprovedSession else { return }
+        localChangeSyncTask?.cancel()
+        localChangeSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard let self else { return }
+            await self.syncBidirectional(showProgress: false)
+        }
+    }
+
+    private func shouldSkipPull(for file: String) -> Bool {
+        guard file == "conversations.json" else { return false }
+        return AppState.shared?.conversations
+            .contains(where: { conv in conv.messages.contains(where: \.isStreaming) }) == true
+    }
+
+    private func maxTimestamp(in data: Data) -> Date {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return .distantPast
+        }
+        let iso = ISO8601DateFormatter()
+        return json.compactMap { $0["updatedAt"] as? String }
+            .compactMap { iso.date(from: $0) }
+            .max() ?? .distantPast
+    }
+
+    private func applyPulledData(_ data: Data, for file: String) async throws {
+        switch file {
+        case "sync_settings.json":
+            applySettingsFromJSON(data)
+        case "sync_api_keys.json":
+            applyAPIKeysFromJSON(data)
+        default:
+            let targetURL = localBaseURL().appendingPathComponent(file)
+            try await Task.detached(priority: .utility) {
+                try data.write(to: targetURL, options: .atomic)
+            }.value
+        }
+    }
+
+    private func localSyncData(for file: String) -> Data? {
+        switch file {
+        case "sync_settings.json":
+            return exportedSettingsJSON()
+        case "sync_api_keys.json":
+            return exportedAPIKeysJSON()
+        case "health_data.json":
+            #if os(iOS)
+            if UserDefaults.standard.bool(forKey: "settings.syncHealth") {
+                let semaphore = DispatchSemaphore(value: 0)
+                var healthData: Data?
+                Task {
+                    let data = await IOSHealthKitManager.shared.fetchSyncData()
+                    healthData = try? JSONEncoder().encode(data)
+                    semaphore.signal()
+                }
+                _ = semaphore.wait(timeout: .now() + 10)
+                return healthData
+            }
+            return nil
+            #else
+            let url = localBaseURL().appendingPathComponent(file)
+            return try? Data(contentsOf: url)
+            #endif
+        default:
+            let url = localBaseURL().appendingPathComponent(file)
+            return try? Data(contentsOf: url)
         }
     }
 
@@ -535,6 +764,7 @@ final class IOSRealRemoteViewModel: ObservableObject {
         case "automations.json": return "Automations"
         case "sync_settings.json": return "Settings"
         case "sync_api_keys.json": return "API Keys"
+        case "health_data.json": return "Health Data"
         default: return file
         }
     }
@@ -561,6 +791,38 @@ final class IOSRealRemoteViewModel: ObservableObject {
         }
     }
 
+    private func exportedSettingsJSON() -> Data {
+        let keys = UserDefaults.standard.dictionaryRepresentation().keys
+            .filter {
+                $0.hasPrefix("settings.") ||
+                $0.hasPrefix("account.") ||
+                $0.hasPrefix("preferences.")
+            }
+            .sorted()
+
+        var dict: [String: Any] = [:]
+        for key in keys {
+            if let value = UserDefaults.standard.object(forKey: key),
+               JSONSerialization.isValidJSONObject([key: value]) {
+                dict[key] = value
+            }
+        }
+        return (try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+    }
+
+    private func exportedAPIKeysJSON() -> Data {
+        let keys = UserDefaults.standard.dictionaryRepresentation().keys
+            .filter { $0.hasPrefix("lumiagent.apikey.") }
+            .sorted()
+        var dict: [String: String] = [:]
+        for key in keys {
+            if let value = UserDefaults.standard.string(forKey: key), !value.isEmpty {
+                dict[key] = value
+            }
+        }
+        return (try? JSONEncoder().encode(dict)) ?? Data()
+    }
+
     private func run(_ type: String, parameters: [String: String] = [:], timeout: TimeInterval = 15) {
         guard connectedDevice != nil else {
             status = "Not connected"
@@ -573,6 +835,10 @@ final class IOSRealRemoteViewModel: ObservableObject {
                 _ = try await client.send(type, parameters: parameters, timeout: timeout)
             } catch {
                 status = error.localizedDescription
+                if !client.isConnected {
+                    connectedDevice = nil
+                    endRemoteSession()
+                }
             }
             isBusy = false
         }

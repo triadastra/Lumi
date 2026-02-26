@@ -22,6 +22,14 @@ private let screenControlToolNames: Set<String> = [
     "type_text", "press_key"
 ]
 
+#if os(iOS)
+typealias IOSRemoteMacCommandExecutor = (
+    _ commandType: String,
+    _ parameters: [String: String],
+    _ timeout: TimeInterval
+) async throws -> IOSRemoteResponse
+#endif
+
 // MARK: - App State
 
 @MainActor
@@ -69,9 +77,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Settings Navigation
     @Published var selectedSettingsSection: String? = "apiKeys"
+    @Published var selectedDeviceId: UUID?
 
     // MARK: - Health
     @Published var selectedHealthCategory: HealthCategory? = .activity
+    @Published var lastSyncedAt: [String: Date] = [:]
 
     // MARK: - Screen Control State
     @Published var isAgentControllingScreen = false
@@ -89,6 +99,10 @@ final class AppState: ObservableObject {
     let remoteServer = MacRemoteServer.shared
     private let usbObserver = USBDeviceObserver.shared
     @Published var isUSBDeviceConnected: Bool = false
+    #elseif os(iOS)
+    @Published private(set) var isRemoteMacConnected: Bool = false
+    private var remoteMacCommandExecutor: IOSRemoteMacCommandExecutor?
+    private var suppressLocalDataChangeNotifications = false
     #endif
 
     // MARK: - Init
@@ -147,6 +161,16 @@ final class AppState: ObservableObject {
         #endif
     }
 
+    #if os(iOS)
+    func setRemoteMacBridge(
+        isConnected: Bool,
+        executor: IOSRemoteMacCommandExecutor?
+    ) {
+        isRemoteMacConnected = isConnected
+        remoteMacCommandExecutor = executor
+    }
+    #endif
+
     // MARK: - Command Palette Message (Shared)
 
     func sendCommandPaletteMessage(text: String, agentId: UUID?) {
@@ -191,6 +215,10 @@ final class AppState: ObservableObject {
         // Try migration from legacy UserDefaults if file doesn't exist
         do {
             let db = DatabaseManager.shared
+            #if os(iOS)
+            suppressLocalDataChangeNotifications = true
+            defer { suppressLocalDataChangeNotifications = false }
+            #endif
             automations = try db.load([AutomationRule].self, from: automationsFileName, default: {
                 if let legacyData = UserDefaults.standard.data(forKey: "lumiagent.automations"),
                    let legacy = try? JSONDecoder().decode([AutomationRule].self, from: legacyData) {
@@ -205,6 +233,13 @@ final class AppState: ObservableObject {
 
     private func saveAutomations() {
         try? DatabaseManager.shared.save(automations, to: automationsFileName)
+        #if os(iOS)
+        guard !suppressLocalDataChangeNotifications else { return }
+        NotificationCenter.default.post(
+            name: Notification.Name("lumi.localDataChanged"),
+            object: automationsFileName
+        )
+        #endif
     }
 
     // MARK: - Tool Call History
@@ -248,6 +283,12 @@ final class AppState: ObservableObject {
         Task {
             let repo = AgentRepository()
             try? await repo.update(agent)
+            #if os(iOS)
+            NotificationCenter.default.post(
+                name: Notification.Name("lumi.localDataChanged"),
+                object: "agents.json"
+            )
+            #endif
         }
     }
 
@@ -257,6 +298,12 @@ final class AppState: ObservableObject {
         Task {
             let repo = AgentRepository()
             try? await repo.delete(id: id)
+            #if os(iOS)
+            NotificationCenter.default.post(
+                name: Notification.Name("lumi.localDataChanged"),
+                object: "agents.json"
+            )
+            #endif
         }
     }
 
@@ -295,6 +342,10 @@ final class AppState: ObservableObject {
     private func loadConversations() {
         do {
             let db = DatabaseManager.shared
+            #if os(iOS)
+            suppressLocalDataChangeNotifications = true
+            defer { suppressLocalDataChangeNotifications = false }
+            #endif
             conversations = try db.load([Conversation].self, from: conversationsFileName, default: {
                 if let legacyData = UserDefaults.standard.data(forKey: "lumiagent.conversations"),
                    let legacy = try? JSONDecoder().decode([Conversation].self, from: legacyData) {
@@ -309,6 +360,13 @@ final class AppState: ObservableObject {
 
     private func saveConversations() {
         try? DatabaseManager.shared.save(conversations, to: conversationsFileName)
+        #if os(iOS)
+        guard !suppressLocalDataChangeNotifications else { return }
+        NotificationCenter.default.post(
+            name: Notification.Name("lumi.localDataChanged"),
+            object: conversationsFileName
+        )
+        #endif
     }
 
     @discardableResult
@@ -430,7 +488,11 @@ final class AppState: ObservableObject {
             tools.append(selfTool.toAITool())
         }
         #else
-        tools = []
+        if isRemoteMacConnected {
+            tools = iOSRemoteMacTools(enabledNames: agent.configuration.enabledTools)
+        } else {
+            tools = []
+        }
         #endif
         if let allowlist = toolNameAllowlist {
             tools = tools.filter { allowlist.contains($0.name) }
@@ -438,6 +500,25 @@ final class AppState: ObservableObject {
 
         let effectiveSystemPrompt: String? = {
             var parts: [String] = []
+            #if os(iOS)
+            if isRemoteMacConnected {
+                parts.append("""
+                Runtime context:
+                • You are running in the iPhone app.
+                • A remote Mac is currently connected and controllable through the provided tools.
+                • Use only the tool list available in this request for Mac actions.
+                """)
+            } else {
+                parts.append("""
+                Runtime context:
+                • You are running in the iPhone app.
+                • No remote Mac is connected right now.
+                • Do not claim desktop/macOS control and do not reference unavailable machines.
+                """)
+            }
+            #else
+            parts.append("Runtime context: You are running directly on the macOS host.")
+            #endif
             if agentMode {
                 let modeDescription = desktopControlEnabled
                     ? "You have FULL autonomous control of the user's Mac — file system, web, shell, apps, and screen."
@@ -466,12 +547,99 @@ final class AppState: ObservableObject {
                   Step 3 → respond with result.
 
                 ═══ TOOL SELECTION GUIDE ═══
-                • Research / web data   → web_search, fetch_url
-                • Files on disk         → write_file, read_file, list_directory, create_directory
+
+                FILE & DOCUMENT TOOLS:
+                • Files on disk         → write_file, read_file, list_directory, create_directory, search_files, append_to_file
+                • File metadata         → get_file_info (size, created/modified dates, type, permissions)
+                • File safety           → move_to_trash (recoverable delete), delete_file (permanent), move_file, copy_file
+                • PDF documents         → read_pdf (extracts page-by-page text via PDFKit)
+                • Word documents        → read_word (supports .doc, .docx, .rtf, .odt via textutil)
+                • PowerPoint files      → read_ppt (extracts slide-by-slide text from .pptx/.ppt)
+                • Any document          → read_document (auto-detects format: PDF, Word, PPT, text, code, etc.)
+                • Unknown/binary files  → read_document first (reports metadata for unreadable formats), then get_file_info
+                • Disk space            → analyze_disk_space (volume usage + largest items in a directory)
+                • Archives              → create_archive (zip files), extract_archive (zip/tar/gz/bz2/xz)
+                • File search           → search_files (regex in directory), spotlight_search (system-wide Spotlight/mdfind)
+                • File hashing          → hash_file (MD5, SHA-1, SHA-256, SHA-512 checksums)
+                • Quick Look            → preview_file (visual preview of any file type)
+
+                SYSTEM & AUTOMATION:
                 • Shell / automation    → execute_command, run_applescript
                 • Open apps / URLs      → open_application, open_url
-                • Screen interaction    → get_screen_info, click_mouse, type_text, press_key, take_screenshot
-                • Memory across turns   → memory_save, memory_read
+                • System info           → get_system_info, get_current_datetime, list_processes, get_user_info
+                • Battery               → get_battery_info (charge level, power source, time remaining)
+
+                WINDOW MANAGEMENT:
+                • List windows          → list_windows (all visible windows with positions/sizes)
+                • Focus window          → focus_window (bring to front by app name + optional title)
+                • Resize/move window    → resize_window (set position and/or size)
+                • Close window          → close_window (close frontmost window of an app)
+                • Running apps          → list_running_apps (GUI apps only), get_frontmost_app
+                • Quit apps             → quit_application (graceful quit)
+                • App menus             → list_menu_items (discover menu bar actions for automation)
+
+                RESEARCH & NETWORK:
+                • Research / web data   → web_search, fetch_url, http_request
+                • Wi-Fi info            → get_wifi_info (SSID, signal, channel)
+                • Network details       → get_network_interfaces (IPs, external IP, DNS)
+                • Connectivity check    → ping_host (latency test)
+
+                SCREEN & UI CONTROL:
+                • Screen interaction    → get_screen_info, click_mouse, type_text, press_key, take_screenshot, scroll_mouse, move_mouse
+                • iWork documents       → iwork_get_document_info, iwork_write_text, iwork_replace_text, iwork_insert_after_anchor
+
+                APPEARANCE:
+                • Dark/Light mode       → get_appearance, set_dark_mode
+                • Brightness            → get_brightness, set_brightness
+                • Wallpaper             → set_wallpaper (change desktop background)
+
+                MEDIA & DEVICES:
+                • Volume / audio        → get_volume, set_volume, set_mute, list_audio_devices, set_audio_output
+                • Media playback        → media_control (play, pause, next, previous, stop)
+                • Bluetooth             → bluetooth_list_devices, bluetooth_connect, bluetooth_scan
+
+                NOTIFICATIONS & TIMERS:
+                • Notifications         → send_notification (macOS banner notification)
+                • Timers                → set_timer (delayed notification, runs in background)
+
+                SPEECH:
+                • Text-to-speech        → speak_text (read text aloud), list_voices (available voices)
+
+                CALENDAR & REMINDERS:
+                • Calendar events       → get_calendar_events (upcoming events), create_calendar_event
+                • Reminders             → get_reminders, create_reminder
+
+                IMAGES:
+                • Image info            → get_image_info (dimensions, format, DPI, color space)
+                • Resize images         → resize_image (change dimensions via sips)
+                • Convert images        → convert_image (png/jpeg/tiff/bmp/gif/pdf)
+
+                DATA & CODE:
+                • Code execution        → run_python, run_node, calculate
+                • Text processing       → search_in_file, replace_in_file, count_lines
+                • Data encoding         → parse_json, encode_base64, decode_base64
+                • Clipboard             → read_clipboard, write_clipboard
+
+                MEMORY:
+                • Memory across turns   → memory_save, memory_read, memory_list, memory_delete
+
+                GIT:
+                • Git operations        → git_status, git_log, git_diff, git_commit, git_branch, git_clone
+
+                ═══ WHEN SOMETHING ISN'T FOUND ═══
+                When a file, application, process, or resource isn't found on the first attempt, DO NOT give up immediately.
+                Instead, explore further:
+                  1. FILE NOT FOUND: Try search_files with broader patterns. Check common locations (~, ~/Desktop, ~/Documents,
+                     ~/Downloads, /Applications). Try list_directory on parent paths. Use execute_command("find / -name '...' -maxdepth 5 2>/dev/null") as a last resort.
+                  2. APP NOT FOUND: Try open_application with variations of the name. Use list_directory("/Applications") or
+                     execute_command("mdfind 'kMDItemContentType == com.apple.application-bundle' -name '<name>'") to search.
+                  3. PROCESS/SERVICE NOT RUNNING: Check with list_processes. Try execute_command("pgrep -l <name>") or
+                     execute_command("lsof -i :<port>") for network services.
+                  4. DOCUMENT UNREADABLE: If read_document returns metadata-only for a binary format, try:
+                     a) get_file_info for full metadata (dates, size, permissions)
+                     b) execute_command("file '<path>'") to identify the actual file type
+                     c) Suggest the user open it in its native app, or try converting with textutil/sips
+                  5. GENERAL RULE: Make at least 2-3 exploratory calls before reporting "not found" to the user.
 
                 ═══ SCREEN CONTROL ═══
                 • Screen origin is top-left (0,0). Coordinates are logical pixels (1:1 with screenshot).
@@ -542,9 +710,17 @@ final class AppState: ObservableObject {
                     • run_applescript — execute AppleScript for automation
                     • execute_command — run shell commands
                     • write_file, read_file — file operations
+                    • read_pdf, read_word, read_ppt, read_document — document reading
+                    • get_file_info — file metadata (size, dates, type, permissions)
+                    • analyze_disk_space — disk usage analysis
                     • web_search, fetch_url — web access
+                    • All memory, git, data, bluetooth, volume, and media tools remain available.
 
                     Use AppleScript (run_applescript) with System Events for sophisticated automation instead of mouse/keyboard clicks.
+
+                    WHEN SOMETHING ISN'T FOUND — same rules apply: explore further with search_files,
+                    list_directory, get_file_info, and execute_command before reporting "not found".
+                    Make at least 2-3 exploratory calls before giving up.
                     """)
                 }
             }
@@ -681,7 +857,14 @@ final class AppState: ObservableObject {
                             result = "Tool not found: \(toolCall.name)"
                         }
                         #else
-                        result = "Tools not available on this platform"
+                        do {
+                            result = try await executeIOSRemoteMacTool(
+                                named: toolCall.name,
+                                arguments: toolCall.arguments
+                            )
+                        } catch {
+                            result = "Error: \(error.localizedDescription)"
+                        }
                         #endif
                         recordToolCall(agentId: agent.id, agentName: agent.name,
                                        toolName: toolCall.name, arguments: toolCall.arguments,
@@ -789,6 +972,255 @@ final class AppState: ObservableObject {
             }
         }
     }
+
+    #if os(iOS)
+    private func iOSRemoteMacTools(enabledNames: [String]) -> [AITool] {
+        let all: [AITool] = [
+            AITool(
+                name: "execute_command",
+                description: "Execute a shell command on the connected Mac and return output.",
+                parameters: AIToolParameters(
+                    properties: [
+                        "command": AIToolProperty(type: "string", description: "Shell command to run on the Mac"),
+                        "working_directory": AIToolProperty(type: "string", description: "Optional working directory on the Mac")
+                    ],
+                    required: ["command"]
+                )
+            ),
+            AITool(
+                name: "run_applescript",
+                description: "Run AppleScript on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: ["script": AIToolProperty(type: "string", description: "AppleScript source")],
+                    required: ["script"]
+                )
+            ),
+            AITool(
+                name: "get_system_info",
+                description: "Get system information from the connected Mac.",
+                parameters: AIToolParameters(properties: [:], required: [])
+            ),
+            AITool(
+                name: "open_application",
+                description: "Open an app on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: ["name": AIToolProperty(type: "string", description: "Application name")],
+                    required: ["name"]
+                )
+            ),
+            AITool(
+                name: "open_url",
+                description: "Open a URL on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: ["url": AIToolProperty(type: "string", description: "URL to open")],
+                    required: ["url"]
+                )
+            ),
+            AITool(
+                name: "list_running_apps",
+                description: "List running GUI apps on the connected Mac.",
+                parameters: AIToolParameters(properties: [:], required: [])
+            ),
+            AITool(
+                name: "quit_application",
+                description: "Quit an app on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: ["name": AIToolProperty(type: "string", description: "Application name")],
+                    required: ["name"]
+                )
+            ),
+            AITool(
+                name: "get_volume",
+                description: "Get current volume on the connected Mac.",
+                parameters: AIToolParameters(properties: [:], required: [])
+            ),
+            AITool(
+                name: "set_volume",
+                description: "Set output volume (0-100) on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: ["level": AIToolProperty(type: "string", description: "Volume 0-100")],
+                    required: ["level"]
+                )
+            ),
+            AITool(
+                name: "set_mute",
+                description: "Mute or unmute output on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: ["muted": AIToolProperty(type: "string", description: "true or false", enumValues: ["true", "false"])],
+                    required: ["muted"]
+                )
+            ),
+            AITool(
+                name: "media_control",
+                description: "Control media playback on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: ["action": AIToolProperty(type: "string", description: "Media action", enumValues: ["play", "pause", "toggle", "next", "previous", "stop"])],
+                    required: ["action"]
+                )
+            ),
+            AITool(
+                name: "get_screen_info",
+                description: "Get screen size information from the connected Mac.",
+                parameters: AIToolParameters(properties: [:], required: [])
+            ),
+            AITool(
+                name: "click_mouse",
+                description: "Click the mouse on the connected Mac at x/y coordinates.",
+                parameters: AIToolParameters(
+                    properties: [
+                        "x": AIToolProperty(type: "string", description: "X coordinate"),
+                        "y": AIToolProperty(type: "string", description: "Y coordinate"),
+                        "button": AIToolProperty(type: "string", description: "left or right", enumValues: ["left", "right"])
+                    ],
+                    required: ["x", "y"]
+                )
+            ),
+            AITool(
+                name: "type_text",
+                description: "Type text into the focused app on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: ["text": AIToolProperty(type: "string", description: "Text to type")],
+                    required: ["text"]
+                )
+            ),
+            AITool(
+                name: "press_key",
+                description: "Press a key on the connected Mac with optional modifiers.",
+                parameters: AIToolParameters(
+                    properties: [
+                        "key": AIToolProperty(type: "string", description: "Key name"),
+                        "modifiers": AIToolProperty(type: "string", description: "Optional comma-separated modifiers")
+                    ],
+                    required: ["key"]
+                )
+            ),
+            AITool(
+                name: "send_notification",
+                description: "Show a system notification on the connected Mac.",
+                parameters: AIToolParameters(
+                    properties: [
+                        "title": AIToolProperty(type: "string", description: "Notification title"),
+                        "message": AIToolProperty(type: "string", description: "Notification body")
+                    ],
+                    required: ["message"]
+                )
+            )
+        ]
+
+        if enabledNames.isEmpty {
+            return all
+        }
+        return all.filter { enabledNames.contains($0.name) }
+    }
+
+    private func executeIOSRemoteMacTool(
+        named toolName: String,
+        arguments: [String: String]
+    ) async throws -> String {
+        guard isRemoteMacConnected, let executor = remoteMacCommandExecutor else {
+            throw NSError(domain: "RemoteMac", code: 1, userInfo: [NSLocalizedDescriptionKey: "No remote Mac connected"])
+        }
+
+        let commandType: String
+        var parameters = arguments
+        var timeout: TimeInterval = 20
+
+        switch toolName {
+        case "execute_command":
+            commandType = "run_shell_command"
+            timeout = 45
+            let command = arguments["command"] ?? ""
+            let workingDirectory = arguments["working_directory"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !workingDirectory.isEmpty {
+                parameters = [
+                    "command": "cd \(shellQuote(workingDirectory)) && \(command)"
+                ]
+            } else {
+                parameters = ["command": command]
+            }
+        case "run_applescript":
+            commandType = "run_applescript"
+            timeout = 45
+            parameters = ["script": arguments["script"] ?? ""]
+        case "get_system_info":
+            commandType = "get_system_info"
+            parameters = [:]
+        case "open_application":
+            commandType = "open_application"
+            parameters = ["name": arguments["name"] ?? ""]
+        case "open_url":
+            commandType = "launch_url"
+            parameters = ["url": arguments["url"] ?? ""]
+        case "list_running_apps":
+            commandType = "list_running_apps"
+            parameters = [:]
+        case "quit_application":
+            commandType = "quit_application"
+            parameters = ["name": arguments["name"] ?? ""]
+        case "get_volume":
+            commandType = "get_volume"
+            parameters = [:]
+        case "set_volume":
+            commandType = "set_volume"
+            parameters = ["level": arguments["level"] ?? "50"]
+        case "set_mute":
+            commandType = "set_mute"
+            parameters = ["muted": arguments["muted"] ?? "false"]
+        case "media_control":
+            let action = (arguments["action"] ?? "toggle").lowercased()
+            switch action {
+            case "play": commandType = "media_play"
+            case "pause": commandType = "media_pause"
+            case "next": commandType = "media_next"
+            case "previous": commandType = "media_previous"
+            case "stop": commandType = "media_stop"
+            default: commandType = "media_toggle"
+            }
+            parameters = [:]
+        case "get_screen_info":
+            commandType = "get_screen_info"
+            parameters = [:]
+        case "click_mouse":
+            commandType = "click_mouse"
+            parameters = [
+                "x": arguments["x"] ?? "0",
+                "y": arguments["y"] ?? "0",
+                "button": arguments["button"] ?? "left"
+            ]
+        case "type_text":
+            commandType = "type_text"
+            parameters = ["text": arguments["text"] ?? ""]
+        case "press_key":
+            commandType = "press_key"
+            parameters = [
+                "key": arguments["key"] ?? "return",
+                "modifiers": arguments["modifiers"] ?? ""
+            ]
+        case "send_notification":
+            commandType = "send_notification"
+            parameters = [
+                "title": arguments["title"] ?? "LumiAgent",
+                "message": arguments["message"] ?? ""
+            ]
+        default:
+            throw NSError(domain: "RemoteMac", code: 2, userInfo: [NSLocalizedDescriptionKey: "Tool not available on iPhone: \(toolName)"])
+        }
+
+        let response = try await executor(commandType, parameters, timeout)
+        if response.success {
+            return response.result.isEmpty ? "OK" : response.result
+        }
+        throw NSError(
+            domain: "RemoteMac",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: response.error ?? "Remote command failed"]
+        )
+    }
+
+    private func shellQuote(_ input: String) -> String {
+        "'" + input.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+    #endif
 }
 
 // MARK: - Sidebar Item

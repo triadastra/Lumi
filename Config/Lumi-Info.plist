@@ -113,6 +113,12 @@
 
     <key>NSCameraUsageDescription</key>
     <string>LumiAgent may use camera access for vision-based features you enable.</string>
+
+    <key>NSHealthShareUsageDescription</key>
+    <string>LumiAgent reads your health data to display activity, heart rate, sleep, and workout metrics on your dashboard.</string>
+
+    <key>NSHealthUpdateUsageDescription</key>
+    <string>LumiAgent may write health data when you use health-related automations.</string>
     
     <!-- App Capabilities -->
     <key>LSMinimumSystemVersion</key>

@@ -12,53 +12,72 @@ import SwiftUI
 
 struct DevicesListView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selectedDeviceID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
-            List(appState.remoteServer.connectedClients, selection: $selectedDeviceID) { client in
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.green.opacity(0.15))
-                            .frame(width: 36, height: 36)
-                        Image(systemName: "iphone")
-                            .font(.callout)
-                            .foregroundStyle(.green)
+            List(selection: $appState.selectedDeviceId) {
+                if !appState.remoteServer.connectedClients.isEmpty {
+                    Section("Connected") {
+                        ForEach(appState.remoteServer.connectedClients) { client in
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.green.opacity(0.15))
+                                        .frame(width: 32, height: 32)
+                                    Image(systemName: "iphone")
+                                        .font(.callout)
+                                        .foregroundStyle(.green)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(client.name)
+                                        .font(.callout)
+                                        .fontWeight(.medium)
+                                    Text("Active")
+                                        .font(.caption2)
+                                        .foregroundStyle(.green)
+                                }
+                                Spacer()
+                            }
+                            .padding(.vertical, 4)
+                            .tag(client.id)
+                        }
                     }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(client.name)
-                            .font(.callout)
-                            .fontWeight(.medium)
-                        Text("Connected")
+                } else {
+                    Section("Connected") {
+                        Text("No devices connected")
                             .font(.caption)
-                            .foregroundStyle(.green)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 4)
                     }
-                    Spacer()
                 }
-                .padding(.vertical, 4)
-                .tag(client.id)
             }
             .listStyle(.sidebar)
             
             Divider()
             
             // Server Status
-            VStack(spacing: 8) {
+            VStack(spacing: 12) {
                 HStack {
                     Circle()
                         .fill(appState.remoteServer.isRunning ? Color.green : Color.red)
                         .frame(width: 8, height: 8)
                     Text(appState.remoteServer.isRunning ? "Lumi Server Online" : "Lumi Server Offline")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                     if !appState.remoteServer.isRunning {
-                        Button("Start Server") {
+                        Button("Start") {
                             appState.remoteServer.start()
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                    } else {
+                        Button("Stop") {
+                            appState.remoteServer.stop()
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
+                        .font(.caption)
                     }
                 }
                 
@@ -71,15 +90,6 @@ struct DevicesListView: View {
                             .font(.caption2)
                             .foregroundStyle(.blue)
                         Spacer()
-                        if !appState.remoteServer.connectedClients.isEmpty {
-                            Button("Sync Now") {
-                                // Sync is usually initiated by phone, but we show it here for UX
-                                print("[DevicesView] Manual sync requested via USB")
-                            }
-                            .buttonStyle(.plain)
-                            .font(.caption2)
-                            .foregroundStyle(.blue)
-                        }
                     }
                 }
             }
@@ -93,6 +103,111 @@ struct DevicesListView: View {
 // MARK: - Devices Detail View
 
 struct DevicesDetailView: View {
+    @EnvironmentObject var appState: AppState
+    
+    var body: some View {
+        Group {
+            if let selectedId = appState.selectedDeviceId,
+               let client = appState.remoteServer.connectedClients.first(where: { $0.id == selectedId }) {
+                DeviceClientDetailView(client: client)
+            } else {
+                DeviceDiscoveryView()
+            }
+        }
+    }
+}
+
+// MARK: - Device Client Detail View
+
+struct DeviceClientDetailView: View {
+    @EnvironmentObject var appState: AppState
+    let client: RemoteClientInfo
+    
+    var body: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "iphone")
+                .font(.system(size: 64))
+                .foregroundStyle(.blue.gradient)
+                .padding()
+                .background(Circle().fill(Color.blue.opacity(0.1)))
+            
+            VStack(spacing: 4) {
+                Text(client.name)
+                    .font(.title)
+                    .fontWeight(.bold)
+                Text("Connected Device")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            
+            VStack(spacing: 0) {
+                DetailRow(title: "Status", value: "Active", valueColor: .green)
+                Divider().padding(.leading, 16)
+                DetailRow(title: "IP Address", value: client.address.components(separatedBy: ":").first ?? client.address)
+                Divider().padding(.leading, 16)
+                DetailRow(title: "Connected At", value: client.connectedAt.formatted(date: .abbreviated, time: .shortened))
+            }
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: 400)
+            
+            HStack(spacing: 16) {
+                Button(role: .destructive) {
+                    appState.remoteServer.rejectConnection(client.id)
+                    appState.selectedDeviceId = nil
+                } label: {
+                    Label("Disconnect", systemImage: "xmark.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .tint(.red)
+                
+                Button {
+                    // Send a ping to verify connection
+                    Task {
+                        // appState.remoteServer is primarily for receiving,
+                        // but if we had a send mechanism we would invoke it here.
+                        print("Pinging \(client.name)")
+                    }
+                } label: {
+                    Label("Ping Device", systemImage: "waveform")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(true) // Disabled until outbound push commands are supported
+            }
+            .frame(maxWidth: 400)
+            
+            Spacer()
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct DetailRow: View {
+    let title: String
+    let value: String
+    var valueColor: Color = .primary
+    
+    var body: some View {
+        HStack {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .foregroundStyle(valueColor)
+                .fontWeight(.medium)
+        }
+        .padding(16)
+    }
+}
+
+// MARK: - Device Discovery View
+
+struct DeviceDiscoveryView: View {
     @EnvironmentObject var appState: AppState
     
     var body: some View {
@@ -115,7 +230,7 @@ struct DevicesDetailView: View {
                 
                 VStack(alignment: .leading, spacing: 14) {
                     FeatureRow(icon: "wifi", title: "Same Wi-Fi", detail: "Ensure both devices are on the same local network.")
-                    FeatureRow(icon: "cable.connector", title: "Cable/Port Link", detail: "USB-C/Thunderbolt/Ethernet direct links are supported via direct host connect.")
+                    FeatureRow(icon: "cable.connector", title: "Cable/Port Link", detail: "USB-C/Thunderbolt/Ethernet direct links are supported.")
                     FeatureRow(icon: "lock.shield", title: "Secure Sync", detail: "Encrypted peer-to-peer data transfer for your agents.")
                     FeatureRow(icon: "bolt.fill", title: "Remote Control", detail: "Control volume, brightness, and run scripts from your phone.")
                 }
@@ -128,13 +243,26 @@ struct DevicesDetailView: View {
                     Text("Direct Connect Addresses")
                         .font(.headline)
                     ForEach(appState.remoteServer.connectionHints(), id: \.self) { hint in
-                        Text(hint)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                        HStack {
+                            Text(hint)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(hint, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Copy Address")
+                        }
                     }
                     Text("Use one of these in iOS Remote → Direct Connect when discovery does not appear over cable.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .padding(.top, 4)
                 }
                 .frame(maxWidth: 560, alignment: .leading)
                 .padding(16)

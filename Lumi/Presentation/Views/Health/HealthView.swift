@@ -56,33 +56,6 @@ struct HealthMetric: Identifiable {
     var weeklyData: [(label: String, value: Double)] = []
 }
 
-// MARK: - iOS Sync Data
-
-struct HealthMetricDTO: Codable {
-    let name: String
-    let value: String
-    let unit: String
-    let icon: String
-    let colorName: String
-    let date: Date
-    let weeklyData: [WeeklyDataPointDTO]
-}
-
-struct WeeklyDataPointDTO: Codable {
-    let label: String
-    let value: Double
-}
-
-struct HealthSyncData: Codable {
-    var activity: [HealthMetricDTO] = []
-    var heart: [HealthMetricDTO] = []
-    var body: [HealthMetricDTO] = []
-    var sleep: [HealthMetricDTO] = []
-    var workouts: [HealthMetricDTO] = []
-    var vitals: [HealthMetricDTO] = []
-    var updatedAt: Date = Date()
-}
-
 #if os(macOS)
 import AppKit
 import HealthKit
@@ -259,11 +232,9 @@ final class HealthKitManager: ObservableObject {
     private init() {
         isAvailable = HKHealthStore.isHealthDataAvailable()
         
-        NotificationCenter.default.addObserver(forName: Notification.Name("lumi.dataRemoteUpdated"), object: nil, queue: .main) { [weak self] note in
-            if let file = note.object as? String, file == "health_data.json" {
-                Task { @MainActor in
-                    await self?.loadAllMetrics()
-                }
+        NotificationCenter.default.addObserver(forName: Notification.Name("lumi.dataRemoteUpdated"), object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                await self?.loadAllMetrics()
             }
         }
     }
@@ -314,6 +285,13 @@ final class HealthKitManager: ObservableObject {
     func requestAuthorization() async {
         guard isAvailable else {
             error = "Apple Health is not available on this device."
+            await loadAllMetrics()
+            return
+        }
+        // Verify the required Info.plist keys exist before calling the API.
+        // Without these, HealthKit throws an uncatchable NSException that crashes the app.
+        guard Bundle.main.object(forInfoDictionaryKey: "NSHealthShareUsageDescription") != nil else {
+            error = "HealthKit requires NSHealthShareUsageDescription in Info.plist."
             await loadAllMetrics()
             return
         }

@@ -158,6 +158,7 @@ struct AutomationRule: Identifiable, Codable {
     var isEnabled: Bool
     var lastRunAt: Date?
     var createdAt: Date
+    var updatedAt: Date
 
     init(
         id: UUID = UUID(),
@@ -165,7 +166,9 @@ struct AutomationRule: Identifiable, Codable {
         notes: String = "",
         trigger: AutomationTrigger = .manual,
         agentId: UUID? = nil,
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
     ) {
         self.id = id
         self.title = title
@@ -174,6 +177,20 @@ struct AutomationRule: Identifiable, Codable {
         self.agentId = agentId
         self.isEnabled = isEnabled
         self.lastRunAt = nil
-        self.createdAt = Date()
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? "New Automation"
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        trigger = try container.decodeIfPresent(AutomationTrigger.self, forKey: .trigger) ?? .manual
+        agentId = try container.decodeIfPresent(UUID.self, forKey: .agentId)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        lastRunAt = try container.decodeIfPresent(Date.self, forKey: .lastRunAt)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
     }
 }

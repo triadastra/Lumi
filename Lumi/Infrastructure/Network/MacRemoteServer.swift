@@ -286,7 +286,8 @@ public final class MacRemoteServer {
             let totalNeeded = 4 + payloadLength
             guard bufferBox.buffer.count >= totalNeeded else { break }
 
-            let payload = Data(bufferBox.buffer[4..<totalNeeded])
+            let start = bufferBox.buffer.startIndex
+            let payload = Data(bufferBox.buffer[start + 4 ..< start + totalNeeded])
             bufferBox.buffer.removeFirst(totalNeeded)
 
             guard let command = try? JSONDecoder().decode(RemoteCommandMessage.self, from: payload) else {
@@ -588,9 +589,22 @@ public final class MacRemoteServer {
                     let b64 = payload.base64EncodedString()
                     return RemoteResponseMessage(id: id, success: true, result: "Sync API keys", imageData: b64)
                 }
+                
                 if let data = DatabaseManager.shared.rawData(for: fileName) {
                     let b64 = data.base64EncodedString()
-                    return RemoteResponseMessage(id: id, success: true, result: "Sync data for \(fileName)", imageData: b64)
+                    var resultStr = "Sync data for \(fileName)"
+                    
+                    // Try to extract latest updatedAt from the JSON if it's an array of objects
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                        let latestDate = json.compactMap { $0["updatedAt"] as? String }
+                            .compactMap { ISO8601DateFormatter().date(from: $0) }
+                            .max()
+                        if let latest = latestDate {
+                            resultStr += "|updatedAt:\(ISO8601DateFormatter().string(from: latest))"
+                        }
+                    }
+                    
+                    return RemoteResponseMessage(id: id, success: true, result: resultStr, imageData: b64)
                 } else {
                     return RemoteResponseMessage(id: id, success: false, result: "", error: "File \(fileName) not found")
                 }
@@ -600,8 +614,23 @@ public final class MacRemoteServer {
                 guard let b64 = params["data"], let data = Data(base64Encoded: b64) else {
                     return RemoteResponseMessage(id: id, success: false, result: "", error: "Invalid sync data")
                 }
+                
+                // CONFLICT RESOLUTION: Check if incoming data is newer than local
+                if let incomingJson = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                   let localData = DatabaseManager.shared.rawData(for: fileName),
+                   let localJson = try? JSONSerialization.jsonObject(with: localData) as? [[String: Any]] {
+                    
+                    let incomingMax = incomingJson.compactMap { $0["updatedAt"] as? String }
+                        .compactMap { ISO8601DateFormatter().date(from: $0) }.max() ?? .distantPast
+                    let localMax = localJson.compactMap { $0["updatedAt"] as? String }
+                        .compactMap { ISO8601DateFormatter().date(from: $0) }.max() ?? .distantPast
+                    
+                    if localMax > incomingMax {
+                        return RemoteResponseMessage(id: id, success: false, result: "Stale data", error: "Mac has newer data (\(fileName)). Sync from Mac first.")
+                    }
+                }
+
                 // Save to local database
-                // Note: We use a simple save here. Repositories will reload on next access.
                 try data.write(to: baseURL().appendingPathComponent(fileName), options: .atomic)
                 
                 // Notify AppState to reload if it's currently running

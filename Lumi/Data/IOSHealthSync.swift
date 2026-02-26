@@ -1,20 +1,40 @@
 import Foundation
+import Combine
 import HealthKit
 
+// MARK: - Health Sync DTOs
+// These are available on both iOS and macOS to facilitate data transfer.
+
 public struct HealthMetricDTO: Codable, Identifiable {
-    public var id = UUID()
+    public var id: UUID
     public let name: String
     public let value: String
     public let unit: String
     public let icon: String
     public let colorName: String
-    public var date: Date = Date()
-    public var weeklyData: [WeeklyDataPointDTO] = []
+    public var date: Date
+    public var weeklyData: [WeeklyDataPointDTO]
+
+    public init(id: UUID = UUID(), name: String, value: String, unit: String, icon: String, colorName: String, date: Date = Date(), weeklyData: [WeeklyDataPointDTO] = []) {
+        self.id = id
+        self.name = name
+        self.value = value
+        self.unit = unit
+        self.icon = icon
+        self.colorName = colorName
+        self.date = date
+        self.weeklyData = weeklyData
+    }
 }
 
 public struct WeeklyDataPointDTO: Codable {
     public let label: String
     public let value: Double
+
+    public init(label: String, value: Double) {
+        self.label = label
+        self.value = value
+    }
 }
 
 public struct HealthSyncData: Codable {
@@ -29,6 +49,10 @@ public struct HealthSyncData: Codable {
     public init() {}
 }
 
+// MARK: - iOS HealthKit Manager
+// Only compiled on iOS as macOS uses this to decode data, not to fetch from HealthKit.
+
+#if os(iOS)
 @MainActor
 public final class IOSHealthKitManager: ObservableObject {
     public static let shared = IOSHealthKitManager()
@@ -63,6 +87,12 @@ public final class IOSHealthKitManager: ObservableObject {
     public func requestAuthorization() async throws {
         guard HKHealthStore.isHealthDataAvailable() else {
             throw NSError(domain: "HealthKit", code: 1, userInfo: [NSLocalizedDescriptionKey: "HealthKit is not available on this device."])
+        }
+        // Verify the required Info.plist keys exist before calling the API.
+        // Without these, HealthKit throws an uncatchable NSException that crashes the app.
+        guard Bundle.main.object(forInfoDictionaryKey: "NSHealthShareUsageDescription") != nil else {
+            self.error = "HealthKit requires NSHealthShareUsageDescription in Info.plist. Add it in Xcode under your target's Info tab."
+            throw NSError(domain: "HealthKit", code: 2, userInfo: [NSLocalizedDescriptionKey: "Missing NSHealthShareUsageDescription in Info.plist."])
         }
         do {
             try await store.requestAuthorization(toShare: [], read: readTypes)
@@ -153,7 +183,7 @@ public final class IOSHealthKitManager: ObservableObject {
         if let height = await fetchLatest(.height, unit: .foot()) {
             let feet = Int(height)
             let inches = Int((height - Double(feet)) * 12)
-            metrics.append(HealthMetricDTO(name: "Height", value: "\(feet)'\(inches)"", unit: "", icon: "ruler.fill", colorName: "gray"))
+            metrics.append(HealthMetricDTO(name: "Height", value: "\(feet)'\(inches)\"", unit: "", icon: "ruler.fill", colorName: "gray"))
         }
         return metrics
     }
@@ -178,7 +208,8 @@ public final class IOSHealthKitManager: ObservableObject {
         let workouts = await fetchRecentWorkouts(limit: 10)
         return workouts.map { w in
             let duration = Int(w.duration / 60)
-            let energy   = w.totalEnergyBurned?.doubleValue(for: .kilocalorie()) ?? 0
+            let energyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!
+            let energy = w.statistics(for: energyType)?.sumQuantity()?.doubleValue(for: .kilocalorie()) ?? 0
             return HealthMetricDTO(name: "Workout", value: "\(duration) min", unit: energy > 0 ? "· \(Int(energy)) kcal" : "", icon: "dumbbell.fill", colorName: "orange", date: w.startDate)
         }
     }
@@ -298,3 +329,4 @@ public final class IOSHealthKitManager: ObservableObject {
         }
     }
 }
+#endif

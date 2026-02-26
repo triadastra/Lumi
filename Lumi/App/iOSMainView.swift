@@ -382,6 +382,10 @@ struct iOSChatView: View {
         appState.conversations.first { $0.id == conversationId }
     }
 
+    private var canSend: Bool {
+        !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
@@ -428,40 +432,66 @@ struct iOSChatView: View {
             Divider()
 
             // Input Area
-            HStack(alignment: .bottom, spacing: 12) {
+            HStack(alignment: .bottom, spacing: 10) {
                 Button {
                     // Future: Add Image attachment for vision
                 } label: {
                     Image(systemName: "plus")
-                        .font(.title3.bold())
+                        .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(.blue)
-                        .padding(10)
-                        .background(Color.blue.opacity(0.1))
+                        .frame(width: 32, height: 32)
+                        .background(Color.blue.opacity(0.14))
                         .clipShape(Circle())
                 }
+                .buttonStyle(.plain)
+                .padding(.bottom, 4)
 
-                TextField("Message", text: $inputText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Color(uiColor: .secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .lineLimit(1...6)
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField("iMessage", text: $inputText, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...6)
+                        .submitLabel(.send)
+                        .onSubmit {
+                            sendMessage()
+                        }
+                        .padding(.leading, 2)
+                        .padding(.vertical, 6)
 
-                if !inputText.isEmpty {
-                    Button {
-                        sendMessage()
+                    if canSend {
+                        Button {
+                            sendMessage()
+                        } label: {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 28, height: 28)
+                                .background(Color.blue)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .transition(.scale.combined(with: .opacity))
                     } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 36))
-                            .foregroundStyle(.blue)
+                        EmptyView()
                     }
-                    .transition(.scale.combined(with: .opacity))
+                    } else {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 28, height: 28)
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color(uiColor: .secondarySystemBackground))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule().stroke(Color.black.opacity(0.04), lineWidth: 1)
+                )
+                .animation(.easeInOut(duration: 0.18), value: canSend)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 12)
-            .background(.ultraThinMaterial)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(uiColor: .systemBackground))
         }
         .navigationTitle(conversation?.title ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
@@ -569,6 +599,8 @@ struct iOSRemoteControlView: View {
 
 struct iOSSettingsView: View {
     @EnvironmentObject var appState: AppState
+    @AppStorage("settings.syncHealth") private var syncHealth = false
+    @State private var healthError: String?
 
     var body: some View {
         List {
@@ -581,6 +613,54 @@ struct iOSSettingsView: View {
                 }
             } header: {
                 Text("Connection")
+            }
+
+            Section {
+                Toggle(isOn: $syncHealth) {
+                    Label("Sync Apple Health", systemImage: "heart.fill")
+                }
+                .tint(.red)
+                .onChange(of: syncHealth) {
+                    if syncHealth {
+                        Task {
+                            do {
+                                try await IOSHealthKitManager.shared.requestAuthorization()
+                                healthError = nil
+                            } catch {
+                                healthError = error.localizedDescription
+                                syncHealth = false
+                            }
+                        }
+                    }
+                }
+
+                if syncHealth {
+                    Button {
+                        Task {
+                            do {
+                                try await IOSHealthKitManager.shared.requestAuthorization()
+                                healthError = nil
+                            } catch {
+                                healthError = error.localizedDescription
+                            }
+                        }
+                    } label: {
+                        Text("Update Health Permissions")
+                            .font(.footnote)
+                    }
+                }
+
+                if let healthError {
+                    Text(healthError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Text("When enabled, your steps, heart rate, sleep, and other health metrics will sync to your Mac for AI analysis.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Health & Wellness")
             }
 
             Section {
@@ -602,11 +682,8 @@ struct iOSSettingsView: View {
             }
 
             Section {
-                Link(destination: URL(string: "https://lumiagent.com")!) {
-                    Label("Official Website", systemImage: "safari")
-                }
                 Link(destination: URL(string: "https://github.com/Lumicake/Agent-Lumi")!) {
-                    Label("View on GitHub", systemImage: "link")
+                    Label("GitHub Repository", systemImage: "link")
                 }
             }
         }
@@ -748,6 +825,10 @@ struct iOSNewAgentView: View {
         Task {
             let repo = AgentRepository()
             try? await repo.update(agent)
+            NotificationCenter.default.post(
+                name: Notification.Name("lumi.localDataChanged"),
+                object: "agents.json"
+            )
         }
     }
 }

@@ -9,6 +9,7 @@
 
 #if os(macOS)
 import SwiftUI
+import UserNotifications
 
 // MARK: - Visual Effect View
 
@@ -80,6 +81,25 @@ struct MainWindow: View {
         }
         .environmentObject(executionEngine)
         .focusedSceneValue(\.executionEngine, executionEngine)
+        .onChange(of: appState.remoteServer.pendingApprovals.count) { oldCount, newCount in
+            if newCount > oldCount, let req = appState.remoteServer.pendingApprovals.last {
+                // Auto-navigate to the Devices tab so the user sees the approval prompt
+                appState.selectedSidebarItem = .devices
+                appState.selectedDeviceId = nil
+                // Bring the window to front
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.requestUserAttention(.criticalRequest)
+                // Show a system notification via UNUserNotificationCenter
+                let content = UNMutableNotificationContent()
+                content.title = "Device Connection Request"
+                content.body = "\(req.name) wants to connect to this Mac"
+                content.sound = .default
+                let request = UNNotificationRequest(identifier: req.id.uuidString, content: content, trigger: nil)
+                Task {
+                    try? await UNUserNotificationCenter.current().add(request)
+                }
+            }
+        }
     }
 
     func executeCurrentAgent() async {

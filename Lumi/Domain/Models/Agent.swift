@@ -40,13 +40,24 @@ struct Agent: Identifiable, Codable, Equatable {
 }
 
 extension Agent {
-    /// Deterministic avatar color derived from the agent's ID.
+    /// Stable avatar color derived from the agent UUID.
     var avatarColor: Color {
         let palette: [Color] = [
             .blue, .purple, .pink, .orange, .green, .teal, .indigo, .red
         ]
-        let hash = abs(id.hashValue)
-        return palette[hash % palette.count]
+
+        // Use a stable FNV-1a hash over UUID bytes.
+        let uuid = id.uuid
+        let hash: UInt64 = withUnsafeBytes(of: uuid) { raw in
+            var value: UInt64 = 1469598103934665603
+            for byte in raw {
+                value ^= UInt64(byte)
+                value &*= 1099511628211
+            }
+            return value
+        }
+
+        return palette[Int(hash % UInt64(palette.count))]
     }
 }
 
