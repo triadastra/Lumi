@@ -2257,11 +2257,11 @@ enum ReminderTools {
 
     /// Get upcoming reminders.
     static func getReminders(list: String?) async throws -> String {
-        let listClause = list.map { "reminders of list \"\($0)\"" } ?? "reminders of default list"
+        let targetList = list.map { "list \"\($0)\"" } ?? "default list"
         let script = """
         tell application "Reminders"
             set output to ""
-            set rems to (every reminder of default list whose completed is false)
+            set rems to (every reminder of \(targetList) whose completed is false)
             repeat with rem in rems
                 set remName to name of rem
                 set output to output & "• " & remName
@@ -2282,9 +2282,10 @@ enum ReminderTools {
     static func createReminder(title: String, dueDate: String?, notes: String?, list: String?) async throws -> String {
         let duePart = dueDate.map { "set due date of newRem to date \"\($0)\"" } ?? ""
         let notesPart = notes.map { "set body of newRem to \"\($0)\"" } ?? ""
+        let targetList = list.map { "list \"\($0)\"" } ?? "default list"
         let script = """
         tell application "Reminders"
-            set newRem to make new reminder at end of default list with properties {name:"\(title)"}
+            set newRem to make new reminder at end of \(targetList) with properties {name:"\(title)"}
             \(duePart)
             \(notesPart)
             return "Reminder created: \(title)"
@@ -2389,7 +2390,6 @@ enum UtilityTools {
 
     /// Get the current user's info (username, home directory, shell).
     static func getUserInfo() async throws -> String {
-        let proc = ProcessInfo.processInfo
         let user = NSUserName()
         let home = NSHomeDirectory()
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
@@ -2403,7 +2403,6 @@ enum UtilityTools {
 
     /// List all menu bar items of the frontmost app (useful for automation).
     static func listMenuItems(app: String?) async throws -> String {
-        let target = app ?? "{frontmost application}"
         let script: String
         if let a = app, !a.isEmpty {
             script = """

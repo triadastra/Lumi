@@ -87,6 +87,7 @@ final class AppState: ObservableObject {
     @Published var isAgentControllingScreen = false
     private var screenControlCount = 0
     var screenControlTasks: [Task<Void, Never>] = []
+    private var responseTasksByConversation: [UUID: [UUID: Task<Void, Never>]] = [:]
     private var hotkeyRefreshObserver: NSObjectProtocol?
     @AppStorage("settings.enableGlobalHotkeys") var enableGlobalHotkeys = true
 
@@ -219,20 +220,28 @@ final class AppState: ObservableObject {
             suppressLocalDataChangeNotifications = true
             defer { suppressLocalDataChangeNotifications = false }
             #endif
-            automations = try db.load([AutomationRule].self, from: automationsFileName, default: {
+            
+            let collection = try db.load(SyncCollection<AutomationRule>.self, from: automationsFileName, default: {
+                // Migration: Check for old array format in file
+                if let oldArray = try? db.load([AutomationRule].self, from: automationsFileName, default: []) {
+                    return SyncCollection(items: oldArray)
+                }
+                // Migration: Check for legacy UserDefaults
                 if let legacyData = UserDefaults.standard.data(forKey: "lumiagent.automations"),
                    let legacy = try? JSONDecoder().decode([AutomationRule].self, from: legacyData) {
-                    return legacy
+                    return SyncCollection(items: legacy)
                 }
-                return []
+                return SyncCollection(items: [])
             }())
+            automations = collection.items
         } catch {
             print("Error loading automations: \(error)")
         }
     }
 
     private func saveAutomations() {
-        try? DatabaseManager.shared.save(automations, to: automationsFileName)
+        let collection = SyncCollection(items: automations)
+        try? DatabaseManager.shared.save(collection, to: automationsFileName)
         #if os(iOS)
         guard !suppressLocalDataChangeNotifications else { return }
         NotificationCenter.default.post(
@@ -261,6 +270,36 @@ final class AppState: ObservableObject {
         screenControlTasks.removeAll()
         screenControlCount = 0
         isAgentControllingScreen = false
+    }
+
+    func isConversationResponding(_ conversationId: UUID) -> Bool {
+        if let tasks = responseTasksByConversation[conversationId], !tasks.isEmpty {
+            return true
+        }
+        return conversations
+            .first(where: { $0.id == conversationId })?
+            .messages.contains(where: \.isStreaming) == true
+    }
+
+    func stopResponse(in conversationId: UUID) {
+        if let tasks = responseTasksByConversation[conversationId] {
+            tasks.values.forEach { $0.cancel() }
+            responseTasksByConversation.removeValue(forKey: conversationId)
+        }
+
+        if let ci = conversations.firstIndex(where: { $0.id == conversationId }) {
+            var changed = false
+            for i in conversations[ci].messages.indices where conversations[ci].messages[i].isStreaming {
+                conversations[ci].messages[i].isStreaming = false
+                if conversations[ci].messages[i].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    conversations[ci].messages[i].content = "Stopped."
+                }
+                changed = true
+            }
+            if changed {
+                conversations[ci].updatedAt = Date()
+            }
+        }
     }
 
     // MARK: - Agent Persistence
@@ -346,20 +385,28 @@ final class AppState: ObservableObject {
             suppressLocalDataChangeNotifications = true
             defer { suppressLocalDataChangeNotifications = false }
             #endif
-            conversations = try db.load([Conversation].self, from: conversationsFileName, default: {
+            
+            let collection = try db.load(SyncCollection<Conversation>.self, from: conversationsFileName, default: {
+                // Migration: Check for old array format in file
+                if let oldArray = try? db.load([Conversation].self, from: conversationsFileName, default: []) {
+                    return SyncCollection(items: oldArray)
+                }
+                // Migration: Check for legacy UserDefaults
                 if let legacyData = UserDefaults.standard.data(forKey: "lumiagent.conversations"),
                    let legacy = try? JSONDecoder().decode([Conversation].self, from: legacyData) {
-                    return legacy
+                    return SyncCollection(items: legacy)
                 }
-                return []
+                return SyncCollection(items: [])
             }())
+            conversations = collection.items
         } catch {
             print("Error loading conversations: \(error)")
         }
     }
 
     private func saveConversations() {
-        try? DatabaseManager.shared.save(conversations, to: conversationsFileName)
+        let collection = SyncCollection(items: conversations)
+        try? DatabaseManager.shared.save(collection, to: conversationsFileName)
         #if os(iOS)
         guard !suppressLocalDataChangeNotifications else { return }
         NotificationCenter.default.post(
@@ -378,6 +425,7 @@ final class AppState: ObservableObject {
         }
         let conv = Conversation(participantIds: [agentId])
         conversations.insert(conv, at: 0)
+        saveConversations()
         selectedConversationId = conv.id
         selectedSidebarItem = .agentSpace
         return conv
@@ -387,14 +435,17 @@ final class AppState: ObservableObject {
     func createGroup(agentIds: [UUID], title: String?) -> Conversation {
         let conv = Conversation(title: title, participantIds: agentIds)
         conversations.insert(conv, at: 0)
+        saveConversations()
         selectedConversationId = conv.id
         selectedSidebarItem = .agentSpace
         return conv
     }
 
     func deleteConversation(id: UUID) {
+        stopResponse(in: id)
         conversations.removeAll { $0.id == id }
         if selectedConversationId == id { selectedConversationId = nil }
+        saveConversations()
     }
 
     // MARK: - Messaging
@@ -412,8 +463,21 @@ final class AppState: ObservableObject {
         let mentioned = participants.filter { text.contains("@\($0.name)") }
         let targets: [Agent] = mentioned.isEmpty ? participants : mentioned
 
+        let runID = UUID()
         let task = Task { [weak self] in
             guard let self else { return }
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    var tasks = self.responseTasksByConversation[conversationId] ?? [:]
+                    tasks.removeValue(forKey: runID)
+                    if tasks.isEmpty {
+                        self.responseTasksByConversation.removeValue(forKey: conversationId)
+                    } else {
+                        self.responseTasksByConversation[conversationId] = tasks
+                    }
+                }
+            }
             for agent in targets {
                 guard !Task.isCancelled else { break }
                 let freshHistory = conversations
@@ -424,6 +488,9 @@ final class AppState: ObservableObject {
                                      desktopControlEnabled: desktopControlEnabled)
             }
         }
+        var tasks = responseTasksByConversation[conversationId] ?? [:]
+        tasks[runID] = task
+        responseTasksByConversation[conversationId] = tasks
         screenControlTasks.append(task)
     }
 
@@ -770,6 +837,7 @@ final class AppState: ObservableObject {
         func updatePlaceholder(_ text: String) {
             if let ci = conversations.firstIndex(where: { $0.id == conversationId }),
                let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }) {
+                guard conversations[ci].messages[mi].isStreaming else { return }
                 conversations[ci].messages[mi].content = text
             }
             #if os(macOS)
@@ -916,6 +984,12 @@ final class AppState: ObservableObject {
                     #endif
                 }
                 if finalContent.isEmpty { updatePlaceholder("(no response)") }
+            }
+        } catch is CancellationError {
+            if let ci = conversations.firstIndex(where: { $0.id == conversationId }),
+               let mi = conversations[ci].messages.firstIndex(where: { $0.id == placeholderId }),
+               conversations[ci].messages[mi].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                conversations[ci].messages[mi].content = "Stopped."
             }
         } catch {
             updatePlaceholder("Error: \(error.localizedDescription)")

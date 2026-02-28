@@ -102,56 +102,106 @@ enum AIProvider: String, Codable, CaseIterable {
     case qwen = "Aliyun Qwen"
     case ollama = "Ollama"
 
-    var defaultModels: [String] {
+    var recommendedModels: [String] {
         switch self {
         case .openai:
             return [
                 "gpt-5.2",
-                "gpt-5-small",
-                "o3",
-                "o4-mini",
-                "gpt-4.1",
-                "gpt-4.1-mini",
-                "gpt-4o",
-                "gpt-4o-mini",
-                "gpt-4-turbo",
+                "gpt-5-mini",
+                "gpt-4.1"
             ]
         case .anthropic:
             return [
-                "claude-opus-4-6",
-                "claude-sonnet-4-6",
-                "claude-haiku-4-5-20251001",
+                "claude-sonnet-4-20250514",
+                "claude-opus-4-1-20250805",
+                "claude-3-5-haiku-latest"
             ]
         case .gemini:
             return [
-                // Gemini 3.x
-                "gemini-3.1-pro",
-                "gemini-3.1-flash",
-                "gemini-3.1-flash-lite",
-                "gemini-3.0-pro",
-                "gemini-3.0-flash",
-                "gemini-3.0-flash-lite",
-                "gemini-3-pro",
-                // Gemini 2.x
-                "gemini-2.5-pro-preview-06-05",
-                "gemini-2.5-flash-preview-05-20",
-                "gemini-2.0-flash",
-                "gemini-2.0-flash-lite",
-                // Gemini 1.x
-                "gemini-1.5-pro",
-                "gemini-1.5-flash",
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-3.1-pro-preview"
             ]
         case .qwen:
             return [
                 "qwen-plus",
-                "qwen-turbo",
+                "qwen-flash",
+                "qwen3-max"
+            ]
+        case .ollama:
+            return [
+                "qwen2.5:7b",
+                "llama3.2:3b",
+                "deepseek-r1:8b"
+            ]
+        }
+    }
+
+    var allModels: [String] {
+        switch self {
+        case .openai:
+            return [
+                "gpt-5.2",
+                "gpt-5.2-pro",
+                "gpt-5",
+                "gpt-5-mini",
+                "gpt-5-nano",
+                "gpt-4.1",
+                "gpt-4.1-mini",
+                "gpt-4.1-nano",
+                "o3",
+                "o4-mini",
+                "gpt-4o",
+                "gpt-4o-mini",
+                "gpt-4-turbo"
+            ]
+        case .anthropic:
+            return [
+                "claude-opus-4-1-20250805",
+                "claude-opus-4-20250514",
+                "claude-sonnet-4-20250514",
+                "claude-3-7-sonnet-20250219",
+                "claude-3-5-sonnet-20241022",
+                "claude-3-5-haiku-20241022",
+                "claude-3-haiku-20240307",
+                "claude-opus-4-1",
+                "claude-opus-4-0",
+                "claude-sonnet-4-0",
+                "claude-3-7-sonnet-latest",
+                "claude-3-5-haiku-latest"
+            ]
+        case .gemini:
+            return [
+                "gemini-3.1-pro-preview",
+                "gemini-3.1-pro-preview-customtools",
+                "gemini-3-flash-preview",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite",
+                "gemini-2.0-flash",
+                "gemini-2.0-flash-lite"
+            ]
+        case .qwen:
+            return [
+                "qwen-plus",
+                "qwen-plus-latest",
                 "qwen-max",
-                "qwen2.5-72b-instruct",
-                "qwen2.5-32b-instruct"
+                "qwen-max-latest",
+                "qwen-flash",
+                "qwen-turbo",
+                "qwen-turbo-latest",
+                "qwen3-max",
+                "qwen3-max-preview",
+                "qwen3-coder-plus",
+                "qwen3-coder-flash"
             ]
         case .ollama:
             return []
         }
+    }
+
+    var defaultModels: [String] {
+        allModels
     }
 }
 

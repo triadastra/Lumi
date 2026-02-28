@@ -385,8 +385,7 @@ final class IOSRealRemoteViewModel: ObservableObject {
             .sink { [weak self] connected in
                 guard let self else { return }
                 if !connected, self.isApprovedSession {
-                    self.connectedDevice = nil
-                    self.status = "Disconnected"
+                    self.status = "Connection lost"
                     self.endRemoteSession()
                 }
             }
@@ -465,7 +464,7 @@ final class IOSRealRemoteViewModel: ObservableObject {
 
     private func awaitApproval() async throws {
         var approved = false
-        for _ in 0..<20 {
+        for _ in 0..<60 {
             let ping = try await client.send(
                 "ping",
                 parameters: ["device_name": UIDevice.current.name],
@@ -534,6 +533,54 @@ final class IOSRealRemoteViewModel: ObservableObject {
         isSyncInFlight = true
         defer { isSyncInFlight = false }
 
+        #if os(iOS)
+        if UserDefaults.standard.bool(forKey: "settings.syncHealth") {
+            await IOSHealthKitManager.shared.prefetchAndCacheSync()
+        }
+        #endif
+
+        // PRE-FLIGHT CHECK: Skip the whole sync if both sides are up to date for all files.
+        var anyUpdateNeeded = false
+        for file in syncFiles {
+            let localData = localSyncData(for: file)
+            let localMax = localData.flatMap { maxTimestamp(in: $0) } ?? .distantPast
+            
+            do {
+                let response = try await client.send("get_sync_data", parameters: ["file": file], timeout: 10)
+                if response.success {
+                    let iso = ISO8601DateFormatter()
+                    var remoteMax: Date = .distantPast
+                    if let resultStr = response.result.components(separatedBy: "|").first(where: { $0.hasPrefix("updatedAt:") }) {
+                        let ts = resultStr.replacingOccurrences(of: "updatedAt:", with: "")
+                        remoteMax = iso.date(from: ts) ?? .distantPast
+                    }
+                    if remoteMax != localMax {
+                        anyUpdateNeeded = true
+                        break
+                    }
+                } else {
+                    // If Mac doesn't have it but we do, we need to push.
+                    if localData != nil {
+                        anyUpdateNeeded = true
+                        break
+                    }
+                }
+            } catch {
+                // If we can't check, assume update is needed or let it fail later.
+                anyUpdateNeeded = true
+                break
+            }
+        }
+
+        if !anyUpdateNeeded {
+            print("[Sync] Skipping sync - all files are up to date.")
+            if showProgress {
+                status = "Up to date"
+                isSyncing = false
+            }
+            return
+        }
+
         let totalSteps = Double(syncFiles.count * 2)
         var completedSteps = 0.0
         func step(_ detail: String? = nil) {
@@ -561,27 +608,6 @@ final class IOSRealRemoteViewModel: ObservableObject {
                 guard let localData = localSyncData(for: file) else {
                     step()
                     continue
-                }
-
-                // Check if Mac already has newer data for this file
-                if ["agents.json", "conversations.json", "automations.json"].contains(file) {
-                    let response = try await client.send("get_sync_data", parameters: ["file": file], timeout: 20)
-                    if response.success {
-                        let iso = ISO8601DateFormatter()
-                        let localMax = maxTimestamp(in: localData)
-                        var remoteMax: Date = .distantPast
-                        
-                        if let resultStr = response.result.components(separatedBy: "|").first(where: { $0.hasPrefix("updatedAt:") }) {
-                            let ts = resultStr.replacingOccurrences(of: "updatedAt:", with: "")
-                            remoteMax = iso.date(from: ts) ?? .distantPast
-                        }
-                        
-                        if remoteMax > localMax {
-                            print("[Sync] Skipping upload of \(file) - Mac is newer (Mac: \(remoteMax), Local: \(localMax))")
-                            step()
-                            continue
-                        }
-                    }
                 }
 
                 let response = try await client.send(
@@ -703,14 +729,53 @@ final class IOSRealRemoteViewModel: ObservableObject {
             .contains(where: { conv in conv.messages.contains(where: \.isStreaming) }) == true
     }
 
+    private struct SyncCollectionMetadata: Codable {
+        let updatedAt: Date
+    }
+
     private func maxTimestamp(in data: Data) -> Date {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        if let metadata = try? JSONDecoder().decode(SyncCollectionMetadata.self, from: data) {
+            return metadata.updatedAt
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) else {
             return .distantPast
         }
-        let iso = ISO8601DateFormatter()
-        return json.compactMap { $0["updatedAt"] as? String }
-            .compactMap { iso.date(from: $0) }
-            .max() ?? .distantPast
+        return maxTimestamp(in: json)
+    }
+
+    private func maxTimestamp(in json: Any) -> Date {
+        switch json {
+        case let dict as [String: Any]:
+            var timestamps: [Date] = []
+            if let updated = dict["updatedAt"], let date = parseDateValue(updated) {
+                timestamps.append(date)
+            }
+            if let items = dict["items"] {
+                let nested = maxTimestamp(in: items)
+                if nested > .distantPast {
+                    timestamps.append(nested)
+                }
+            }
+            return timestamps.max() ?? .distantPast
+        case let array as [Any]:
+            return array.map { maxTimestamp(in: $0) }.max() ?? .distantPast
+        default:
+            return .distantPast
+        }
+    }
+
+    private func parseDateValue(_ raw: Any) -> Date? {
+        if let value = raw as? Double {
+            return Date(timeIntervalSinceReferenceDate: value)
+        }
+        if let value = raw as? NSNumber {
+            return Date(timeIntervalSinceReferenceDate: value.doubleValue)
+        }
+        if let text = raw as? String {
+            let iso = ISO8601DateFormatter()
+            return iso.date(from: text)
+        }
+        return nil
     }
 
     private func applyPulledData(_ data: Data, for file: String) async throws {
@@ -719,6 +784,14 @@ final class IOSRealRemoteViewModel: ObservableObject {
             applySettingsFromJSON(data)
         case "sync_api_keys.json":
             applyAPIKeysFromJSON(data)
+        case "health_data.json":
+            let targetURL = localBaseURL().appendingPathComponent(file)
+            try await Task.detached(priority: .utility) {
+                try data.write(to: targetURL, options: .atomic)
+            }.value
+            #if os(iOS)
+            IOSHealthKitManager.shared.updateCachedSyncData(data)
+            #endif
         default:
             let targetURL = localBaseURL().appendingPathComponent(file)
             try await Task.detached(priority: .utility) {
@@ -736,15 +809,7 @@ final class IOSRealRemoteViewModel: ObservableObject {
         case "health_data.json":
             #if os(iOS)
             if UserDefaults.standard.bool(forKey: "settings.syncHealth") {
-                let semaphore = DispatchSemaphore(value: 0)
-                var healthData: Data?
-                Task {
-                    let data = await IOSHealthKitManager.shared.fetchSyncData()
-                    healthData = try? JSONEncoder().encode(data)
-                    semaphore.signal()
-                }
-                _ = semaphore.wait(timeout: .now() + 10)
-                return healthData
+                return IOSHealthKitManager.shared.cachedOrPersistedSyncData()
             }
             return nil
             #else
@@ -929,8 +994,7 @@ struct IOSRealRemoteControlView: View {
 
             if let status = vm.status {
                 Section("Status") {
-                    Text(status)
-                        .font(.footnote)
+                    MarkdownMessageView(text: status, agents: AppState.shared?.agents ?? [], fontSize: 11)
                         .foregroundStyle(.secondary)
                 }
             }

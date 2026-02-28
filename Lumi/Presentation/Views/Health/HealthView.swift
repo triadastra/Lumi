@@ -228,6 +228,8 @@ final class HealthKitManager: ObservableObject {
 
     @Published var analysisResults: [HealthCategory: String] = [:]
     @Published var analyzingCategory: HealthCategory?
+    @Published var isSyncedFromiPhone = false
+    @Published var lastSyncedAt: Date?
 
     private init() {
         isAvailable = HKHealthStore.isHealthDataAvailable()
@@ -322,15 +324,18 @@ final class HealthKitManager: ObservableObject {
 
         // Attempt to load synced data from iOS via Peer-to-Peer
         if let rawData = DatabaseManager.shared.rawData(for: "health_data.json"),
-           let syncData = try? JSONDecoder().decode(HealthSyncData.self, from: rawData) {
-            
+           let syncData = try? JSONDecoder().decode(HealthSyncData.self, from: rawData),
+           !syncData.activity.isEmpty || !syncData.heart.isEmpty || !syncData.sleep.isEmpty || !syncData.body.isEmpty || !syncData.workouts.isEmpty || !syncData.vitals.isEmpty {
+
             activityMetrics = loadScreenTimeFallbackMetrics() + syncData.activity.map { mapDTO($0) }
             heartMetrics = syncData.heart.map { mapDTO($0) }
             bodyMetrics = syncData.body.map { mapDTO($0) }
             sleepMetrics = syncData.sleep.map { mapDTO($0) }
             workoutMetrics = syncData.workouts.map { mapDTO($0) }
             vitalsMetrics = syncData.vitals.map { mapDTO($0) }
-            
+
+            isSyncedFromiPhone = true
+            lastSyncedAt = syncData.updatedAt
             isAuthorized = true
             isLoading = false
             return
@@ -344,6 +349,8 @@ final class HealthKitManager: ObservableObject {
         sleepMetrics = []
         workoutMetrics = []
         vitalsMetrics = []
+        isSyncedFromiPhone = false
+        lastSyncedAt = nil
         isLoading = false
         isAuthorized = false
     }
@@ -833,31 +840,43 @@ struct HealthListView: View {
     var body: some View {
         Group {
             List(selection: $appState.selectedHealthCategory) {
-                if !hk.isAvailable {
+                if hk.isSyncedFromiPhone {
+                    Section {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Synced from iPhone", systemImage: "iphone.and.arrow.forward")
+                                .font(.callout.bold())
+                                .foregroundStyle(.green)
+                            if let syncDate = hk.lastSyncedAt {
+                                Text("Last updated \(syncDate.formatted(.relative(presentation: .named)))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                } else if !hk.isAvailable {
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Label("Apple Health unavailable on this build", systemImage: "heart.slash")
+                            Label("Apple Health unavailable", systemImage: "heart.slash")
                                 .font(.headline)
-                            Text("Using local screen-time tracking for Activity insights.")
+                            Text("Connect your iPhone to sync health data, or use local screen-time tracking.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         .padding(.vertical, 6)
                     }
-                }
-
-                if hk.isAvailable && !hk.isAuthorized {
+                } else if !hk.isAuthorized {
                     Section {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Allow Apple Health Access")
+                            Text("No Health Data")
                                 .font(.headline)
-                            Text("Grant permission to read your health data from iPhone/Apple Watch.")
+                            Text("Connect your iPhone and enable Health sync in the iOS app, or grant local Apple Health access.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Button {
                                 Task { await hk.requestAuthorization() }
                             } label: {
-                                Label("Request Access", systemImage: "heart.text.square.fill")
+                                Label("Request Local Access", systemImage: "heart.text.square.fill")
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(.red)
@@ -901,12 +920,11 @@ struct HealthListView: View {
             }
         }
         .task {
-            if hk.isAuthorized {
-                await hk.loadAllMetrics()
-            } else if hk.isAvailable {
+            // Always try loading synced data first — it takes priority over local HealthKit
+            await hk.loadAllMetrics()
+            // If no synced data was found and local HealthKit is available, try local auth
+            if !hk.isSyncedFromiPhone && !hk.isAuthorized && hk.isAvailable {
                 await hk.requestAuthorizationIfNeeded()
-            } else {
-                await hk.loadAllMetrics()
             }
         }
     }
@@ -962,6 +980,8 @@ struct HealthDetailView: View {
                 category: category,
                 metrics: hk.metricsForCategory(category),
                 isLoading: hk.isLoading,
+                isSynced: hk.isSyncedFromiPhone,
+                lastSyncedAt: hk.lastSyncedAt,
                 analysis: hk.analysisResults[category],
                 isAnalyzing: hk.analyzingCategory == category,
                 onAnalyze: {
@@ -983,6 +1003,8 @@ struct HealthCategoryDetailView: View {
     let category: HealthCategory
     let metrics: [HealthMetric]
     let isLoading: Bool
+    var isSynced: Bool = false
+    var lastSyncedAt: Date? = nil
     let analysis: String?
     let isAnalyzing: Bool
     let onAnalyze: () -> Void
@@ -1008,9 +1030,19 @@ struct HealthCategoryDetailView: View {
                         Text(category.rawValue)
                             .font(.title2)
                             .fontWeight(.semibold)
-                        Text(Date().formatted(date: .long, time: .omitted))
+                        if isSynced, let syncDate = lastSyncedAt {
+                            HStack(spacing: 4) {
+                                Image(systemName: "iphone")
+                                    .font(.caption2)
+                                Text("Synced \(syncDate.formatted(.relative(presentation: .named)))")
+                            }
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                        } else {
+                            Text(Date().formatted(date: .long, time: .omitted))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                     Button(action: onAnalyze) {
@@ -1052,11 +1084,19 @@ struct HealthCategoryDetailView: View {
                             Text("No \(category.rawValue) data")
                                 .font(.headline)
                                 .foregroundStyle(.secondary)
-                            Text("Make sure your iPhone or Apple Watch is syncing to Apple Health.")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, 40)
+                            if isSynced {
+                                Text("This category has no data recorded in Apple Health on your iPhone.")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 40)
+                            } else {
+                                Text("Connect your iPhone and enable \"Sync Apple Health\" in the Lumi iOS settings to see your health data here.")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 40)
+                            }
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 48)

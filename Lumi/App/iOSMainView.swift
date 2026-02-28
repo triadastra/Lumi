@@ -44,14 +44,23 @@ struct iOSMainView: View {
             }
             .tag(2)
 
-            // 4. Settings
+            // 4. Health
+            NavigationStack {
+                IOSHealthDashboardView()
+            }
+            .tabItem {
+                Label("Health", systemImage: "heart.fill")
+            }
+            .tag(3)
+
+            // 5. Settings
             NavigationStack {
                 iOSSettingsView()
             }
             .tabItem {
                 Label("Settings", systemImage: "gearshape.fill")
             }
-            .tag(3)
+            .tag(4)
         }
         .tint(.blue)
     }
@@ -377,9 +386,14 @@ struct iOSChatView: View {
     let conversationId: UUID
     @EnvironmentObject var appState: AppState
     @State private var inputText = ""
+    @State private var lastStreamingAutoScrollTime: TimeInterval = 0
 
     var conversation: Conversation? {
         appState.conversations.first { $0.id == conversationId }
+    }
+
+    private var agentsById: [UUID: Agent] {
+        Dictionary(uniqueKeysWithValues: appState.agents.map { ($0.id, $0) })
     }
 
     private var canSend: Bool {
@@ -388,110 +402,9 @@ struct iOSChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 20) {
-                        if let conv = conversation {
-                            if conv.messages.isEmpty {
-                                VStack(spacing: 16) {
-                                    Image(systemName: "bubble.left.and.bubble.right")
-                                        .font(.system(size: 60))
-                                        .foregroundStyle(.tertiary)
-                                    Text("Start the conversation")
-                                        .font(.headline)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 100)
-                            } else {
-                                ForEach(conv.messages) { message in
-                                    iOSMessageBubble(message: message)
-                                        .id(message.id)
-                                }
-                            }
-                        }
-                        Color.clear.frame(height: 1).id(chatBottomID)
-                    }
-                    .padding(.horizontal)
-                    .padding(.top, 16)
-                    .padding(.bottom, 8)
-                }
-                .onChange(of: conversation?.messages.count) {
-                    withAnimation {
-                        proxy.scrollTo(chatBottomID, anchor: .bottom)
-                    }
-                }
-                .onChange(of: (conversation?.messages.last?.content.count ?? 0)) {
-                    proxy.scrollTo(chatBottomID, anchor: .bottom)
-                }
-                .onAppear {
-                    proxy.scrollTo(chatBottomID, anchor: .bottom)
-                }
-            }
-
+            chatScrollArea
             Divider()
-
-            // Input Area
-            HStack(alignment: .bottom, spacing: 10) {
-                Button {
-                    // Future: Add Image attachment for vision
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.blue)
-                        .frame(width: 32, height: 32)
-                        .background(Color.blue.opacity(0.14))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .padding(.bottom, 4)
-
-                HStack(alignment: .bottom, spacing: 8) {
-                    TextField("iMessage", text: $inputText, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .lineLimit(1...6)
-                        .submitLabel(.send)
-                        .onSubmit {
-                            sendMessage()
-                        }
-                        .padding(.leading, 2)
-                        .padding(.vertical, 6)
-
-                    if canSend {
-                        Button {
-                            sendMessage()
-                        } label: {
-                            Image(systemName: "arrow.up")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 28, height: 28)
-                                .background(Color.blue)
-                                .clipShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .transition(.scale.combined(with: .opacity))
-                    } label: {
-                        EmptyView()
-                    }
-                    } else {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 28, height: 28)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Color(uiColor: .secondarySystemBackground))
-                .clipShape(Capsule())
-                .overlay(
-                    Capsule().stroke(Color.black.opacity(0.04), lineWidth: 1)
-                )
-                .animation(.easeInOut(duration: 0.18), value: canSend)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(uiColor: .systemBackground))
+            chatInputBar
         }
         .navigationTitle(conversation?.title ?? "Chat")
         .navigationBarTitleDisplayMode(.inline)
@@ -506,21 +419,170 @@ struct iOSChatView: View {
         }
     }
 
+    private var conversationMessages: [SpaceMessage] {
+        conversation?.messages ?? []
+    }
+
+    private var messagesCount: Int {
+        conversation?.messages.count ?? 0
+    }
+
+    private var lastMessageContentCount: Int {
+        conversation?.messages.last?.content.count ?? 0
+    }
+
+    private var showEmptyState: Bool {
+        conversation != nil && conversationMessages.isEmpty
+    }
+
+    private var chatScrollArea: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 20) {
+                    if showEmptyState {
+                        emptyConversationPlaceholder
+                    }
+                    ForEach(conversationMessages) { message in
+                        messageRow(for: message)
+                    }
+                    Color.clear.frame(height: 1).id(chatBottomID)
+                }
+                .padding(.horizontal)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+            }
+            .onChange(of: messagesCount) {
+                lastStreamingAutoScrollTime = 0
+                scrollToBottom(using: proxy, animated: true)
+            }
+            .onChange(of: lastMessageContentCount) {
+                guard conversation?.messages.last?.isStreaming == true else { return }
+                throttledStreamingScroll(using: proxy)
+            }
+            .onAppear {
+                scrollToBottom(using: proxy, animated: false)
+            }
+        }
+    }
+
+    private func messageRow(for message: SpaceMessage) -> some View {
+        iOSMessageBubble(
+            message: message,
+            agent: message.agentId.flatMap { agentsById[$0] }
+        )
+        .equatable()
+        .id(message.id)
+    }
+
+    private var emptyConversationPlaceholder: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 60))
+                .foregroundStyle(.tertiary)
+            Text("Start the conversation")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 100)
+    }
+
+    private var chatInputBar: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            Button {
+                // Future: Add Image attachment for vision
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(.blue)
+                    .frame(width: 32, height: 32)
+                    .background(Color.blue.opacity(0.14))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 4)
+
+            chatTextField
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color(uiColor: .systemBackground))
+    }
+
+    private var chatTextField: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("Write a message", text: $inputText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...6)
+                .submitLabel(.send)
+                .onSubmit {
+                    sendMessage()
+                }
+                .padding(.leading, 2)
+                .padding(.vertical, 6)
+
+            if canSend {
+                Button {
+                    sendMessage()
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.blue)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .transition(.scale.combined(with: .opacity))
+            } else {
+                Image(systemName: "waveform")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color(uiColor: .secondarySystemBackground))
+        .clipShape(Capsule())
+        .overlay(
+            Capsule().stroke(Color.black.opacity(0.04), lineWidth: 1)
+        )
+        .animation(.easeInOut(duration: 0.18), value: canSend)
+    }
+
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         appState.sendMessage(text, in: conversationId, agentMode: false)
         inputText = ""
     }
+
+    private func scrollToBottom(using proxy: ScrollViewProxy, animated: Bool) {
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(chatBottomID, anchor: .bottom)
+            }
+            return
+        }
+        proxy.scrollTo(chatBottomID, anchor: .bottom)
+    }
+
+    private func throttledStreamingScroll(using proxy: ScrollViewProxy) {
+        let now = Date().timeIntervalSinceReferenceDate
+        guard now - lastStreamingAutoScrollTime >= 0.12 else { return }
+        lastStreamingAutoScrollTime = now
+        scrollToBottom(using: proxy, animated: false)
+    }
 }
 
-struct iOSMessageBubble: View {
-    let message: SpaceMessage
+struct iOSMessageBubble: View, Equatable {
     @EnvironmentObject var appState: AppState
+    let message: SpaceMessage
+    let agent: Agent?
 
-    var agent: Agent? {
-        guard let id = message.agentId else { return nil }
-        return appState.agents.first { $0.id == id }
+    static func == (lhs: iOSMessageBubble, rhs: iOSMessageBubble) -> Bool {
+        lhs.message == rhs.message && lhs.agent == rhs.agent
     }
 
     var body: some View {
@@ -534,7 +596,6 @@ struct iOSMessageBubble: View {
                             .font(.system(size: 14, weight: .black))
                             .foregroundColor(.white)
                     )
-                    .shadow(radius: 1)
             } else {
                 Spacer(minLength: 60)
             }
@@ -548,14 +609,12 @@ struct iOSMessageBubble: View {
                         .padding(.leading, 4)
                 }
 
-                Text(message.content)
-                    .font(.body)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(message.role == .user ? Color.blue.gradient : Color(uiColor: .secondarySystemBackground).gradient)
+                MarkdownMessageView(text: message.content, agents: appState.agents)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 4)
+                    .background(message.role == .user ? Color.blue : Color(uiColor: .secondarySystemBackground))
                     .foregroundColor(message.role == .user ? .white : .primary)
                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
 
                 if message.isStreaming {
                     HStack(spacing: 4) {
@@ -626,6 +685,9 @@ struct iOSSettingsView: View {
                             do {
                                 try await IOSHealthKitManager.shared.requestAuthorization()
                                 healthError = nil
+                                // Pre-fetch health data and trigger an immediate sync
+                                await IOSHealthKitManager.shared.prefetchAndCacheSync()
+                                NotificationCenter.default.post(name: Notification.Name("lumi.localDataChanged"), object: nil)
                             } catch {
                                 healthError = error.localizedDescription
                                 syncHealth = false
@@ -636,16 +698,11 @@ struct iOSSettingsView: View {
 
                 if syncHealth {
                     Button {
-                        Task {
-                            do {
-                                try await IOSHealthKitManager.shared.requestAuthorization()
-                                healthError = nil
-                            } catch {
-                                healthError = error.localizedDescription
-                            }
+                        if let url = URL(string: "x-apple-health://") {
+                            UIApplication.shared.open(url)
                         }
                     } label: {
-                        Text("Update Health Permissions")
+                        Label("Manage Health Permissions", systemImage: "arrow.up.forward.app")
                             .font(.footnote)
                     }
                 }

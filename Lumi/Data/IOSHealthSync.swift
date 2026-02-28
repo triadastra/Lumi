@@ -58,8 +58,16 @@ public final class IOSHealthKitManager: ObservableObject {
     public static let shared = IOSHealthKitManager()
 
     private let store = HKHealthStore()
+    private let syncFileName = "health_data.json"
     @Published public var isAuthorized = false
     @Published public var error: String?
+
+    /// Cached sync data ready for immediate transfer, avoiding semaphore deadlocks.
+    public private(set) var cachedSyncData: Data?
+
+    private init() {
+        cachedSyncData = loadPersistedSyncData()
+    }
 
     private var readTypes: Set<HKObjectType> {
         var types: Set<HKObjectType> = []
@@ -104,7 +112,14 @@ public final class IOSHealthKitManager: ObservableObject {
     }
 
     public func fetchSyncData() async -> HealthSyncData {
-        guard isAuthorized else { return HealthSyncData() }
+        await refreshAuthorizationState()
+        guard isAuthorized else {
+            if let cached = cachedOrPersistedSyncData(),
+               let decoded = try? JSONDecoder().decode(HealthSyncData.self, from: cached) {
+                return decoded
+            }
+            return HealthSyncData()
+        }
         
         async let a = loadActivityMetrics()
         async let h = loadHeartMetrics()
@@ -121,9 +136,85 @@ public final class IOSHealthKitManager: ObservableObject {
         data.sleep = sm
         data.workouts = wm
         data.vitals = vm
+        data.updatedAt = Date()
         return data
     }
-    
+
+    /// Fetches all health data and caches the encoded JSON so the next sync can grab it instantly.
+    public func prefetchAndCacheSync() async {
+        let syncData = await fetchSyncData()
+        guard let encoded = try? JSONEncoder().encode(syncData) else { return }
+        cachedSyncData = encoded
+        persistSyncData(encoded)
+    }
+
+    /// Returns cached sync JSON if available, otherwise attempts to load it from disk.
+    public func cachedOrPersistedSyncData() -> Data? {
+        if let cachedSyncData { return cachedSyncData }
+        let persisted = loadPersistedSyncData()
+        cachedSyncData = persisted
+        return persisted
+    }
+
+    /// Updates in-memory and on-disk sync JSON payloads (used when data is pulled from Mac).
+    public func updateCachedSyncData(_ data: Data) {
+        cachedSyncData = data
+        persistSyncData(data)
+    }
+
+    /// Exports a fresh health JSON snapshot to Documents so the user can access it in Files.
+    public func exportSyncSnapshotToDocuments() async throws -> URL {
+        await prefetchAndCacheSync()
+        guard let payload = cachedOrPersistedSyncData() else {
+            throw NSError(
+                domain: "HealthKit",
+                code: 9,
+                userInfo: [NSLocalizedDescriptionKey: "No health JSON available to export."]
+            )
+        }
+
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let folder = docs.appendingPathComponent("LumiAgent", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        let fileName = "health_data_\(formatter.string(from: Date())).json"
+        let targetURL = folder.appendingPathComponent(fileName)
+        try payload.write(to: targetURL, options: .atomic)
+        return targetURL
+    }
+
+    private func refreshAuthorizationState() async {
+        guard HKHealthStore.isHealthDataAvailable() else {
+            isAuthorized = false
+            return
+        }
+        let status: HKAuthorizationRequestStatus = await withCheckedContinuation { cont in
+            store.getRequestStatusForAuthorization(toShare: [], read: readTypes) { requestStatus, _ in
+                cont.resume(returning: requestStatus)
+            }
+        }
+        isAuthorized = (status == .unnecessary)
+    }
+
+    private func persistSyncData(_ data: Data) {
+        try? data.write(to: syncFileURL(), options: .atomic)
+    }
+
+    private func loadPersistedSyncData() -> Data? {
+        try? Data(contentsOf: syncFileURL())
+    }
+
+    private func syncFileURL() -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let dir = appSupport.appendingPathComponent("LumiAgent", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent(syncFileName)
+    }
+
     // MARK: - Activity
     private func loadActivityMetrics() async -> [HealthMetricDTO] {
         var metrics: [HealthMetricDTO] = []
@@ -200,6 +291,8 @@ public final class IOSHealthKitManager: ObservableObject {
         if asleep > 0 { metrics.append(HealthMetricDTO(name: "Sleep", value: fmt(asleep), unit: "", icon: "moon.zzz.fill", colorName: "purple")) }
         if deep > 0 { metrics.append(HealthMetricDTO(name: "Deep Sleep", value: fmt(deep), unit: "", icon: "moon.fill", colorName: "blue")) }
         if rem > 0 { metrics.append(HealthMetricDTO(name: "REM Sleep", value: fmt(rem), unit: "", icon: "sparkles", colorName: "cyan")) }
+        let mindful = await fetchMindfulMinutes()
+        if mindful > 0 { metrics.append(HealthMetricDTO(name: "Mindful (7d)", value: "\(Int(mindful))", unit: "min", icon: "brain.head.profile", colorName: "mint")) }
         return metrics
     }
 
@@ -317,6 +410,19 @@ public final class IOSHealthKitManager: ObservableObject {
             }
         }
         return (inBed, asleep, deep, rem)
+    }
+
+    private func fetchMindfulMinutes() async -> Double {
+        guard let mindfulType = HKCategoryType.categoryType(forIdentifier: .mindfulSession) else { return 0 }
+        let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+        let pred = HKQuery.predicateForSamples(withStart: weekAgo, end: Date())
+        let samples: [HKCategorySample] = await withCheckedContinuation { cont in
+            let q = HKSampleQuery(sampleType: mindfulType, predicate: pred, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, s, _ in
+                cont.resume(returning: (s as? [HKCategorySample]) ?? [])
+            }
+            store.execute(q)
+        }
+        return samples.reduce(0) { $0 + $1.endDate.timeIntervalSince($1.startDate) / 60 }
     }
 
     private func fetchRecentWorkouts(limit: Int) async -> [HKWorkout] {

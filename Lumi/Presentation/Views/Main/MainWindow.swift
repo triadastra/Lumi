@@ -37,6 +37,14 @@ struct MainWindow: View {
     @EnvironmentObject var appState: AppState
     @StateObject var executionEngine = AgentExecutionEngine()
 
+    private var canStopAgentSpaceResponse: Bool {
+        guard appState.selectedSidebarItem == .agentSpace,
+              let conversationId = appState.selectedConversationId else {
+            return false
+        }
+        return appState.isConversationResponding(conversationId)
+    }
+
     var body: some View {
         NavigationSplitView {
             // Sidebar
@@ -61,15 +69,17 @@ struct MainWindow: View {
             if appState.selectedSidebarItem == .agentSpace {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        Task { await executionEngine.stop() }
+                        guard let conversationId = appState.selectedConversationId else { return }
+                        appState.stopResponse(in: conversationId)
                     } label: {
                         Label("Stop", systemImage: "stop.fill")
                             .labelStyle(.titleAndIcon)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .disabled(!executionEngine.isExecuting)
-                    .help("Stop the running agent process")
+                    .tint(canStopAgentSpaceResponse ? .red : .gray)
+                    .disabled(!canStopAgentSpaceResponse)
+                    .help("Stop the current agent response in this conversation")
                     .keyboardShortcut(".", modifiers: .command)
                 }
             }
@@ -78,6 +88,13 @@ struct MainWindow: View {
             NewAgentView()
                 .environmentObject(appState)
                 .frame(minWidth: 500, minHeight: 400)
+        }
+        .sheet(isPresented: Binding(
+            get: { !appState.remoteServer.pendingApprovals.isEmpty },
+            set: { _ in }
+        )) {
+            RemoteApprovalSheet()
+                .environmentObject(appState)
         }
         .environmentObject(executionEngine)
         .focusedSceneValue(\.executionEngine, executionEngine)
@@ -116,6 +133,65 @@ struct MainWindow: View {
         } catch {
             print("Execution error: \(error)")
         }
+    }
+}
+
+// MARK: - Remote Approval Sheet
+
+struct RemoteApprovalSheet: View {
+    @EnvironmentObject var appState: AppState
+    
+    var body: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "iphone.and.arrow.forward")
+                .font(.system(size: 48))
+                .foregroundStyle(.blue.gradient)
+            
+            VStack(spacing: 8) {
+                Text("Connection Request")
+                    .font(.title2.bold())
+                Text("An iOS device wants to connect for remote control and data sync.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            
+            if let req = appState.remoteServer.pendingApprovals.first {
+                VStack(spacing: 4) {
+                    Text(req.name)
+                        .font(.headline)
+                    Text(req.address)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .frame(maxWidth: .infinity)
+                .background(Color.secondary.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                
+                HStack(spacing: 16) {
+                    Button(role: .destructive) {
+                        appState.remoteServer.rejectConnection(req.id)
+                    } label: {
+                        Text("Decline")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    
+                    Button {
+                        appState.remoteServer.approveConnection(req.id)
+                    } label: {
+                        Text("Accept")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
+            }
+        }
+        .padding(30)
+        .frame(width: 400)
     }
 }
 
@@ -924,6 +1000,24 @@ struct NewAgentView: View {
 
     enum Field { case name }
 
+    private func uniqueModels(_ models: [String]) -> [String] {
+        var seen = Set<String>()
+        return models.filter { seen.insert($0).inserted }
+    }
+
+    private var recommendedModelOptions: [String] {
+        let available = uniqueModels(availableModels)
+        let preferred = provider.recommendedModels.filter { available.contains($0) }
+        if !preferred.isEmpty {
+            return preferred
+        }
+        return Array(available.prefix(3))
+    }
+
+    private var allModelOptions: [String] {
+        uniqueModels(availableModels)
+    }
+
     var body: some View {
         Form {
             Section("Agent Details") {
@@ -948,8 +1042,15 @@ struct NewAgentView: View {
                         ProgressView().scaleEffect(0.7)
                     } else if !availableModels.isEmpty {
                         Picker("Model", selection: $model) {
-                            ForEach(availableModels, id: \.self) { m in
-                                Text(m).tag(m)
+                            Section("Recommended") {
+                                ForEach(recommendedModelOptions, id: \.self) { m in
+                                    Text(m).tag(m)
+                                }
+                            }
+                            Section("All Models") {
+                                ForEach(allModelOptions, id: \.self) { m in
+                                    Text(m).tag(m)
+                                }
                             }
                         }
                         if provider == .ollama {

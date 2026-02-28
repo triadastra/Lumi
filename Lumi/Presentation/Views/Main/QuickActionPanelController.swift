@@ -444,10 +444,7 @@ struct AgentReplyBubbleView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     // Agent message
-                    Text(model.text)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.primary)
-                        .lineLimit(nil)
+                    MarkdownMessageView(text: model.text, agents: AppState.shared?.agents ?? [], fontSize: 11)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     // Tool calls stream

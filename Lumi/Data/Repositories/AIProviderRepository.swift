@@ -125,7 +125,7 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
     // MARK: - Message Building Helpers
     // =========================================================================
 
-    /// OpenAI / Ollama message format (role-content pairs, tool role supported)
+    /// OpenAI-compatible message format (role-content pairs, tool role supported)
     private func openAIMessages(from messages: [AIMessage], systemPrompt: String?) -> [[String: Any]] {
         var result: [[String: Any]] = []
         if let sys = systemPrompt, !sys.isEmpty {
@@ -171,6 +171,62 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
                 ])
             }
         }
+        return result
+    }
+
+    /// Ollama /api/chat format. Tool call arguments must stay as objects, not JSON strings.
+    private func ollamaMessages(from messages: [AIMessage], systemPrompt: String?) -> [[String: Any]] {
+        var result: [[String: Any]] = []
+        var toolNameByID: [String: String] = [:]
+
+        if let sys = systemPrompt, !sys.isEmpty {
+            result.append(["role": "system", "content": sys])
+        }
+
+        for msg in messages {
+            switch msg.role {
+            case .system:
+                break
+            case .user:
+                if let imgData = msg.imageData {
+                    var m: [String: Any] = ["role": "user", "content": msg.content]
+                    m["images"] = [imgData.base64EncodedString()]
+                    result.append(m)
+                } else {
+                    result.append(["role": "user", "content": msg.content])
+                }
+            case .assistant:
+                var m: [String: Any] = ["role": "assistant"]
+                if !msg.content.isEmpty {
+                    m["content"] = msg.content
+                }
+
+                if let tcs = msg.toolCalls, !tcs.isEmpty {
+                    m["tool_calls"] = tcs.enumerated().map { index, tc -> [String: Any] in
+                        toolNameByID[tc.id] = tc.name
+                        return [
+                            "type": "function",
+                            "function": [
+                                "index": index,
+                                "name": tc.name,
+                                "arguments": tc.arguments
+                            ] as [String: Any]
+                        ]
+                    }
+                } else if msg.content.isEmpty {
+                    m["content"] = ""
+                }
+
+                result.append(m)
+            case .tool:
+                var m: [String: Any] = ["role": "tool", "content": msg.content]
+                if let id = msg.toolCallId, !id.isEmpty {
+                    m["tool_name"] = toolNameByID[id] ?? id
+                }
+                result.append(m)
+            }
+        }
+
         return result
     }
 
@@ -853,7 +909,7 @@ final class AIProviderRepository: AIProviderRepositoryProtocol {
         let urlStr = ollamaBaseURL.trimmingCharacters(in: .whitespacesAndNewlines) + "/api/chat"
         guard let url = URL(string: urlStr) else { throw AIProviderError.networkError }
 
-        let chatMessages = openAIMessages(from: messages, systemPrompt: systemPrompt)
+        let chatMessages = ollamaMessages(from: messages, systemPrompt: systemPrompt)
         var body: [String: Any] = ["model": model, "messages": chatMessages, "stream": stream]
         if let t = temperature { body["options"] = ["temperature": t] }
         if !tools.isEmpty      { body["tools"] = openAIToolDefs(tools) }

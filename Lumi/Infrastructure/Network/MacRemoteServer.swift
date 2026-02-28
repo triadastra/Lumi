@@ -122,6 +122,15 @@ public final class MacRemoteServer {
     }
 
     public func approveConnection(_ id: UUID) {
+        if let pending = pendingApprovals.first(where: { $0.id == id }) {
+            let clientInfo = RemoteClientInfo(
+                id: id,
+                name: pending.name,
+                address: pending.address,
+                connectedAt: Date()
+            )
+            connectedClients.append(clientInfo)
+        }
         pendingApprovals.removeAll { $0.id == id }
         rejectedConnections.remove(id)
         approvedConnections.insert(id)
@@ -207,14 +216,6 @@ public final class MacRemoteServer {
 
         activeConnections[connectionID] = connection
         
-        let clientInfo = RemoteClientInfo(
-            id: connectionID,
-            name: "iPhone", // Initial placeholder
-            address: endpointString,
-            connectedAt: Date()
-        )
-        connectedClients.append(clientInfo)
-
         connection.stateUpdateHandler = { [weak self] state in
             Task { @MainActor [weak self] in
                 if case .cancelled = state {
@@ -313,9 +314,16 @@ public final class MacRemoteServer {
         if let idx = connectedClients.firstIndex(where: { $0.id == id }) {
             connectedClients[idx].name = name
         }
+        if let idx = pendingApprovals.firstIndex(where: { $0.id == id }) {
+            var approval = pendingApprovals[idx]
+            approval.name = name
+            pendingApprovals[idx] = approval
+        }
 
         // Keep one active row per device name to avoid list explosion on reconnects.
-        let duplicates = connectedClients.filter { $0.name == name && $0.id != id }.map(\.id)
+        let duplicates = (connectedClients.filter { $0.name == name && $0.id != id }.map(\.id)) +
+                         (pendingApprovals.filter { $0.name == name && $0.id != id }.map(\.id))
+        
         for dup in duplicates {
             activeConnections[dup]?.cancel()
             removeConnection(id: dup)
@@ -593,15 +601,10 @@ public final class MacRemoteServer {
                 if let data = DatabaseManager.shared.rawData(for: fileName) {
                     let b64 = data.base64EncodedString()
                     var resultStr = "Sync data for \(fileName)"
-                    
-                    // Try to extract latest updatedAt from the JSON if it's an array of objects
-                    if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                        let latestDate = json.compactMap { $0["updatedAt"] as? String }
-                            .compactMap { ISO8601DateFormatter().date(from: $0) }
-                            .max()
-                        if let latest = latestDate {
-                            resultStr += "|updatedAt:\(ISO8601DateFormatter().string(from: latest))"
-                        }
+
+                    let latestDate = latestUpdatedAt(in: data)
+                    if latestDate > .distantPast {
+                        resultStr += "|updatedAt:\(ISO8601DateFormatter().string(from: latestDate))"
                     }
                     
                     return RemoteResponseMessage(id: id, success: true, result: resultStr, imageData: b64)
@@ -615,17 +618,11 @@ public final class MacRemoteServer {
                     return RemoteResponseMessage(id: id, success: false, result: "", error: "Invalid sync data")
                 }
                 
-                // CONFLICT RESOLUTION: Check if incoming data is newer than local
-                if let incomingJson = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-                   let localData = DatabaseManager.shared.rawData(for: fileName),
-                   let localJson = try? JSONSerialization.jsonObject(with: localData) as? [[String: Any]] {
-                    
-                    let incomingMax = incomingJson.compactMap { $0["updatedAt"] as? String }
-                        .compactMap { ISO8601DateFormatter().date(from: $0) }.max() ?? .distantPast
-                    let localMax = localJson.compactMap { $0["updatedAt"] as? String }
-                        .compactMap { ISO8601DateFormatter().date(from: $0) }.max() ?? .distantPast
-                    
-                    if localMax > incomingMax {
+                // CONFLICT RESOLUTION: Reject stale payloads when both sides expose updatedAt.
+                if let localData = DatabaseManager.shared.rawData(for: fileName) {
+                    let incomingMax = latestUpdatedAt(in: data)
+                    let localMax = latestUpdatedAt(in: localData)
+                    if incomingMax > .distantPast, localMax > .distantPast, localMax > incomingMax {
                         return RemoteResponseMessage(id: id, success: false, result: "Stale data", error: "Mac has newer data (\(fileName)). Sync from Mac first.")
                     }
                 }
@@ -653,6 +650,66 @@ public final class MacRemoteServer {
     private func baseURL() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport.appendingPathComponent("LumiAgent", isDirectory: true)
+    }
+
+    private struct SyncMetadataOnly: Codable {
+        let updatedAt: Date
+    }
+
+    private func latestUpdatedAt(in data: Data) -> Date {
+        if let metadata = try? JSONDecoder().decode(SyncMetadataOnly.self, from: data) {
+            return metadata.updatedAt
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) else {
+            return .distantPast
+        }
+        return latestUpdatedAt(inJSONObject: json)
+    }
+
+    private func latestUpdatedAt(inJSONObject json: Any) -> Date {
+        switch json {
+        case let dict as [String: Any]:
+            var candidates: [Date] = []
+            if let updated = dict["updatedAt"], let date = parseTimestamp(updated) {
+                candidates.append(date)
+            }
+            if let items = dict["items"] {
+                let nested = latestUpdatedAt(inJSONObject: items)
+                if nested > .distantPast {
+                    candidates.append(nested)
+                }
+            }
+            return candidates.max() ?? .distantPast
+        case let array as [Any]:
+            return array.map { latestUpdatedAt(inJSONObject: $0) }.max() ?? .distantPast
+        default:
+            return .distantPast
+        }
+    }
+
+    private func parseTimestamp(_ raw: Any) -> Date? {
+        if let text = raw as? String {
+            return ISO8601DateFormatter().date(from: text)
+        }
+
+        let value: Double?
+        if let number = raw as? NSNumber {
+            value = number.doubleValue
+        } else if let double = raw as? Double {
+            value = double
+        } else if let int = raw as? Int {
+            value = Double(int)
+        } else {
+            value = nil
+        }
+
+        guard let seconds = value else { return nil }
+        let referenceDate = Date(timeIntervalSinceReferenceDate: seconds)
+        let unixDate = Date(timeIntervalSince1970: seconds)
+        let now = Date()
+        let refDistance = Swift.abs(referenceDate.timeIntervalSince(now))
+        let unixDistance = Swift.abs(unixDate.timeIntervalSince(now))
+        return refDistance <= unixDistance ? referenceDate : unixDate
     }
 
     // MARK: - Execution Helpers
@@ -833,7 +890,7 @@ public struct RemoteClientInfo: Codable, Identifiable {
 
 public struct RemoteConnectionApproval: Identifiable {
     public let id: UUID
-    public let name: String
+    public var name: String
     public let address: String
     public let requestedAt: Date
 }

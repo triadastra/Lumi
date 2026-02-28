@@ -202,6 +202,24 @@ private struct EditForm: View {
     @State private var loadingModels = false
     @State private var ollamaUnreachable = false
 
+    private func uniqueModels(_ models: [String]) -> [String] {
+        var seen = Set<String>()
+        return models.filter { seen.insert($0).inserted }
+    }
+
+    private var recommendedModelOptions: [String] {
+        let available = uniqueModels(availableModels)
+        let preferred = draft.configuration.provider.recommendedModels.filter { available.contains($0) }
+        if !preferred.isEmpty {
+            return preferred
+        }
+        return Array(available.prefix(3))
+    }
+
+    private var allModelOptions: [String] {
+        uniqueModels(availableModels)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             // Basic Info
@@ -236,8 +254,15 @@ private struct EditForm: View {
                                 ProgressView().scaleEffect(0.7)
                             } else if !availableModels.isEmpty {
                                 Picker("Model", selection: $draft.configuration.model) {
-                                    ForEach(availableModels, id: \.self) { m in
-                                        Text(m).tag(m)
+                                    Section("Recommended") {
+                                        ForEach(recommendedModelOptions, id: \.self) { m in
+                                            Text(m).tag(m)
+                                        }
+                                    }
+                                    Section("All Models") {
+                                        ForEach(allModelOptions, id: \.self) { m in
+                                            Text(m).tag(m)
+                                        }
                                     }
                                 }
                                 if draft.configuration.provider == .ollama {
