@@ -1,10 +1,15 @@
 # Build artifacts
 .build/
+.build-check/
+dist/
 DerivedData/
 *.o
 *.d
 *.swp
 *.lock
+
+# Project plan
+plan.md
 
 # Xcode
 xcuserdata/
